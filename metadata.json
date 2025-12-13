@@ -1,0 +1,7 @@
+{
+  "name": "VoxScribe AI-Backup",
+  "description": "A professional-grade audio transcription and translation application powered by Gemini 2.5 Flash. Features real-time recording, file upload, accurate transcription, and multi-language translation.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

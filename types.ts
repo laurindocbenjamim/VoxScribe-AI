@@ -33,3 +33,12 @@ export interface LanguageOption {
   code: string;
   name: string;
 }
+
+export type PlanTier = 'free' | 'basic' | 'advanced';
+
+export interface SubscriptionState {
+  tier: PlanTier;
+  minutesUsed: number;
+  maxMinutes: number;
+  canTranslate: boolean;
+}

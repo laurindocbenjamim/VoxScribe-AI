@@ -1,9 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech } from './services/geminiService';
-import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption } from './types';
+import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap } from './services/geminiService';
+import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
+import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
-import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon } from './components/Icons';
+import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon } from './components/Icons';
 import AudioVisualizer from './components/AudioVisualizer';
+import PricingModal from './components/PricingModal';
+import MindMapModal from './components/MindMapModal';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
@@ -12,7 +15,15 @@ const App: React.FC = () => {
   const [result, setResult] = useState<TranscriptionResult | null>(null);
   const [targetLang, setTargetLang] = useState<string>('en'); 
   const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  const [generatedAudioBase64, setGeneratedAudioBase64] = useState<string | null>(null);
+  const [mindMapCode, setMindMapCode] = useState<string | null>(null);
+  const [isMindMapModalOpen, setIsMindMapModalOpen] = useState(false);
   
+  // Subscription State
+  const [subscription, setSubscription] = useState<SubscriptionState>(getSubscription());
+  const [showPricing, setShowPricing] = useState(false);
+
   // Toast State
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' });
 
@@ -30,6 +41,18 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
+  useEffect(() => {
+    // Refresh subscription on load
+    setSubscription(getSubscription());
+  }, []);
+
+  // Update playback rate dynamically if playing
+  useEffect(() => {
+    if (audioSourceRef.current && isPlayingAudio) {
+      audioSourceRef.current.playbackRate.value = playbackRate;
+    }
+  }, [playbackRate, isPlayingAudio]);
+
   // Helper to reset app state
   const resetApp = () => {
     setStatus(AppStatus.IDLE);
@@ -37,6 +60,8 @@ const App: React.FC = () => {
     setResult(null);
     setError(null);
     setRecordingDuration(0);
+    setGeneratedAudioBase64(null);
+    setMindMapCode(null);
     stopAudioPlayback();
     // Cleanup existing blobs
     if (audioData?.url) {
@@ -52,8 +77,26 @@ const App: React.FC = () => {
     }, 3000);
   };
 
+  // Helper to get audio duration
+  const getAudioDuration = (blob: Blob): Promise<number> => {
+    return new Promise((resolve) => {
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.onloadedmetadata = () => {
+        resolve(audio.duration);
+      };
+      // Fallback for types that might fail metadata load quickly
+      setTimeout(() => resolve(0), 1000); 
+    });
+  };
+
   // --- Audio Recording Logic ---
   const startRecording = async () => {
+    // Check limits before starting (approximating 1 second to start)
+    if (!checkLimits(subscription, 1)) {
+        setShowPricing(true);
+        return;
+    }
+
     try {
       setError(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -76,7 +119,8 @@ const App: React.FC = () => {
           blob,
           url,
           name: `recording-${new Date().toISOString()}.webm`,
-          mimeType: 'audio/webm'
+          mimeType: 'audio/webm',
+          duration: recordingDuration // We know duration from timer
         });
         setStatus(AppStatus.IDLE);
         setIsRecording(false);
@@ -111,12 +155,10 @@ const App: React.FC = () => {
   };
 
   // --- File Upload Logic ---
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check size limit: Increase hard limit to 100MB since we now have splitting logic.
-    // However, browser processing of 100MB+ in memory can be heavy.
     if (file.size > 100 * 1024 * 1024) {
       setError("File size too large. Please upload files under 100MB.");
       return;
@@ -124,11 +166,14 @@ const App: React.FC = () => {
 
     resetApp();
     const url = URL.createObjectURL(file);
+    const duration = await getAudioDuration(file);
+    
     setAudioData({
       blob: file,
       url,
       name: file.name,
-      mimeType: file.type || 'audio/mp3' 
+      mimeType: file.type || 'audio/mp3',
+      duration
     });
   };
 
@@ -136,24 +181,34 @@ const App: React.FC = () => {
   const handleProcess = async () => {
     if (!audioData) return;
 
+    // 1. Check Usage Limits
+    const estimatedDuration = audioData.duration || 60; // Fallback 1 min if unknown
+    if (!checkLimits(subscription, estimatedDuration)) {
+        setShowPricing(true);
+        setError("You have reached your usage limit. Please upgrade to continue.");
+        return;
+    }
+
     setStatus(AppStatus.TRANSCRIBING);
     setError(null);
     stopAudioPlayback();
+    setGeneratedAudioBase64(null); // Reset audio when reprocessing
+    setMindMapCode(null);
 
     try {
       let transcript = "";
       
-      // Threshold for using splitting logic: 10MB
-      // 10MB Base64 encoded is ~13.3MB. 20MB is the safety limit.
-      // If file > 10MB, we trigger the robust splitting logic.
+      // Large File Logic
       if (audioData.blob.size > 10 * 1024 * 1024) {
-        // Large file logic
         transcript = await transcribeLargeAudio(audioData.blob);
       } else {
-        // Standard logic
         transcript = await transcribeAudio(audioData.blob, audioData.mimeType);
       }
       
+      // 2. Deduct Usage
+      const newSubState = addUsageMinutes(estimatedDuration);
+      setSubscription(newSubState);
+
       const intermediateResult: TranscriptionResult = {
         originalText: transcript,
       };
@@ -161,16 +216,25 @@ const App: React.FC = () => {
       setResult(intermediateResult);
       setStatus(AppStatus.TRANSLATING);
 
-      // 2. Translate (if text exists)
+      // 3. Translate (if text exists AND allowed)
       if (transcript) {
-        const selectedLangName = TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
-        const translation = await translateText(transcript, selectedLangName);
-        
-        setResult({
-          ...intermediateResult,
-          translatedText: translation,
-          targetLanguage: targetLang
-        });
+        if (targetLang !== 'en' && !subscription.canTranslate) {
+            // Skip translation if not allowed, but keep transcript
+            setResult({
+                ...intermediateResult,
+                translatedText: "Upgrade to Advanced Plan to unlock translation.",
+                targetLanguage: targetLang
+            });
+        } else {
+            const selectedLangName = TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
+            const translation = await translateText(transcript, selectedLangName);
+            
+            setResult({
+              ...intermediateResult,
+              translatedText: translation,
+              targetLanguage: targetLang
+            });
+        }
       }
 
       setStatus(AppStatus.COMPLETED);
@@ -178,6 +242,13 @@ const App: React.FC = () => {
       setError(err.message || "An error occurred during processing.");
       setStatus(AppStatus.ERROR);
     }
+  };
+
+  // --- Plan Upgrade Logic ---
+  const handleUpgrade = (tier: PlanTier) => {
+    const newState = upgradePlan(tier);
+    setSubscription(newState);
+    showToast(`Successfully upgraded to ${tier.charAt(0).toUpperCase() + tier.slice(1)} Plan!`);
   };
 
   // --- Share Logic ---
@@ -202,6 +273,28 @@ const App: React.FC = () => {
     showToast("Copied to clipboard!");
   };
 
+  // --- Mind Map Logic ---
+  const handleGenerateMindMap = async () => {
+    const textToVisualize = result?.translatedText && result.translatedText !== "Upgrade to Advanced Plan to unlock translation."
+      ? result.translatedText 
+      : result?.originalText;
+
+    if (!textToVisualize) return;
+
+    try {
+        if (!mindMapCode) {
+            setStatus(AppStatus.PROCESSING);
+            const code = await generateMindMap(textToVisualize);
+            setMindMapCode(code);
+            setStatus(AppStatus.COMPLETED);
+        }
+        setIsMindMapModalOpen(true);
+    } catch (err: any) {
+        setError("Failed to generate mind map.");
+        setStatus(AppStatus.COMPLETED);
+    }
+  };
+
   // --- TTS Logic ---
   const stopAudioPlayback = () => {
     if (audioSourceRef.current) {
@@ -221,10 +314,16 @@ const App: React.FC = () => {
 
     setIsGeneratingAudio(true);
     try {
-      // 1. Get Base64 Audio
-      const base64Audio = await generateSpeech(result.translatedText, selectedVoice);
+      let base64Audio = generatedAudioBase64;
+
+      // Only fetch if not already cached
+      if (!base64Audio) {
+        base64Audio = await generateSpeech(result.translatedText, selectedVoice);
+        setGeneratedAudioBase64(base64Audio);
+      }
+
+      if (!base64Audio) return;
       
-      // 2. Decode Audio
       const binaryString = atob(base64Audio);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
@@ -232,14 +331,12 @@ const App: React.FC = () => {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // 3. Create Context & Decode
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       } else if (audioContextRef.current.state === 'suspended') {
          await audioContextRef.current.resume();
       }
 
-      // Decode PCM data
       const dataInt16 = new Int16Array(bytes.buffer);
       const frameCount = dataInt16.length;
       const audioBuffer = audioContextRef.current.createBuffer(1, frameCount, 24000);
@@ -249,9 +346,9 @@ const App: React.FC = () => {
         channelData[i] = dataInt16[i] / 32768.0;
       }
 
-      // 4. Play
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
+      source.playbackRate.value = playbackRate; // Apply Speed
       source.connect(audioContextRef.current.destination);
       source.onended = () => setIsPlayingAudio(false);
       
@@ -267,7 +364,74 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Download Helper ---
+  const handleDownloadAudio = () => {
+    if (!generatedAudioBase64) return;
+    
+    // Create simple WAV header or just save raw PCM? 
+    // To make it playable everywhere, we should wrap the PCM in a WAV container.
+    // However, for simplicity here, we assume the user's system can handle raw or we reuse the WAV encoder helper from service
+    // But since the service helper takes Float32, let's just decode the base64 -> Uint8 -> Int16 -> Blob as generic octet stream or try to wrap it.
+    // A simpler approach for the User is to convert the raw PCM data we got into a WAV blob using the existing helper.
+    
+    // Re-use logic to get PCM data
+    const binaryString = atob(generatedAudioBase64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+       bytes[i] = binaryString.charCodeAt(i);
+    }
+    const dataInt16 = new Int16Array(bytes.buffer);
+    const float32Samples = new Float32Array(dataInt16.length);
+    for(let i=0; i<dataInt16.length; i++) {
+        float32Samples[i] = dataInt16[i] / 32768.0;
+    }
+
+    // Use the internal function logic here (duplicated briefly or exported).
+    // Let's create a quick local WAV encoder to avoid exporting internal service logic if it wasn't exported.
+    // Actually, `encodeWAV` is not exported from service. I will do a raw raw download or implement a quick WAV wrapper here.
+    
+    const buffer = new ArrayBuffer(44 + float32Samples.length * 2);
+    const view = new DataView(buffer);
+    const sampleRate = 24000;
+    
+    const writeString = (view: DataView, offset: number, string: string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+    
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + float32Samples.length * 2, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, float32Samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < float32Samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+
+    const wavBlob = new Blob([view], { type: 'audio/wav' });
+    const url = URL.createObjectURL(wavBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `speech-${targetLang}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const downloadText = (text: string, filename: string) => {
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -280,15 +444,6 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (audioData?.url) URL.revokeObjectURL(audioData.url);
-      if (audioContextRef.current) audioContextRef.current.close();
-    };
-  }, []);
-
   // Format seconds to MM:SS
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -296,21 +451,75 @@ const App: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Usage Bar Component
+  const UsageBar = () => {
+    const percent = Math.min((subscription.minutesUsed / subscription.maxMinutes) * 100, 100);
+    const isLow = percent > 80;
+    
+    return (
+        <div className="bg-slate-800 rounded-lg p-3 border border-slate-700 w-full md:w-64">
+            <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-400">Monthly Usage</span>
+                <span className={`${isLow ? 'text-amber-400' : 'text-slate-200'}`}>
+                    {Math.floor(subscription.minutesUsed)} / {subscription.maxMinutes} mins
+                </span>
+            </div>
+            <div className="w-full bg-slate-700 rounded-full h-2">
+                <div 
+                    className={`h-2 rounded-full transition-all duration-500 ${isLow ? 'bg-amber-500' : 'bg-blue-500'}`} 
+                    style={{ width: `${percent}%` }}
+                ></div>
+            </div>
+            {subscription.tier === 'free' && (
+                <button onClick={() => setShowPricing(true)} className="text-xs text-blue-400 hover:text-blue-300 mt-2 w-full text-center">
+                    Upgrade to remove limits
+                </button>
+            )}
+        </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8">
+      {showPricing && (
+          <PricingModal 
+            currentTier={subscription.tier} 
+            onUpgrade={handleUpgrade} 
+            onClose={() => setShowPricing(false)} 
+          />
+      )}
+      
+      {isMindMapModalOpen && mindMapCode && (
+        <MindMapModal 
+            mermaidCode={mindMapCode} 
+            onClose={() => setIsMindMapModalOpen(false)} 
+        />
+      )}
+
       <div className="max-w-5xl mx-auto space-y-8">
         
         {/* Header */}
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6 space-y-4 md:space-y-0">
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-              VoxScribe AI
-            </h1>
+            <div className="flex items-center space-x-3">
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                VoxScribe AI
+                </h1>
+                {subscription.tier === 'advanced' && (
+                    <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs border border-purple-500/50 flex items-center">
+                        <SparklesIcon className="w-3 h-3 mr-1" /> PRO
+                    </span>
+                )}
+            </div>
             <p className="text-slate-400 mt-2">Professional Audio Transcription & Translation</p>
           </div>
-          <div className="mt-4 md:mt-0 flex items-center space-x-2 text-sm text-slate-500">
-            <span className={`h-2.5 w-2.5 rounded-full ${status === AppStatus.PROCESSING || status === AppStatus.TRANSCRIBING ? 'bg-amber-400 animate-pulse' : status === AppStatus.COMPLETED ? 'bg-green-400' : 'bg-slate-600'}`}></span>
-            <span>Status: {status}</span>
+          
+          <div className="flex flex-col items-end space-y-3">
+            <UsageBar />
+            <div className="flex items-center space-x-2 text-sm text-slate-500">
+                <span className={`h-2.5 w-2.5 rounded-full ${status === AppStatus.PROCESSING || status === AppStatus.TRANSCRIBING ? 'bg-amber-400 animate-pulse' : status === AppStatus.COMPLETED ? 'bg-green-400' : 'bg-slate-600'}`}></span>
+                <span>Status: {status}</span>
+            </div>
           </div>
         </header>
 
@@ -331,10 +540,21 @@ const App: React.FC = () => {
                     {/* Record Button */}
                     <button 
                       onClick={startRecording}
-                      className="w-full h-16 flex items-center justify-center space-x-3 rounded-xl bg-red-500/10 border border-red-500/50 hover:bg-red-500/20 text-red-400 transition-all group"
+                      disabled={subscription.minutesUsed >= subscription.maxMinutes}
+                      className={`w-full h-16 flex items-center justify-center space-x-3 rounded-xl border transition-all group
+                        ${subscription.minutesUsed >= subscription.maxMinutes 
+                            ? 'bg-slate-700 border-slate-600 text-slate-500 cursor-not-allowed' 
+                            : 'bg-red-500/10 border-red-500/50 hover:bg-red-500/20 text-red-400'}
+                      `}
                     >
-                      <MicIcon className="w-6 h-6 group-hover:scale-110 transition-transform" />
-                      <span className="font-medium">Start Recording</span>
+                      {subscription.minutesUsed >= subscription.maxMinutes ? (
+                          <span className="flex items-center"><LockIcon className="w-5 h-5 mr-2"/> Limit Reached</span>
+                      ) : (
+                          <>
+                            <MicIcon className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                            <span className="font-medium">Start Recording</span>
+                          </>
+                      )}
                     </button>
 
                     <div className="flex items-center justify-center text-slate-500 text-sm">
@@ -347,11 +567,25 @@ const App: React.FC = () => {
                         type="file" 
                         accept="audio/*" 
                         onChange={handleFileUpload}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        disabled={subscription.minutesUsed >= subscription.maxMinutes}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
                       />
-                      <div className="w-full h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-600 hover:border-blue-500 hover:bg-slate-700/50 transition-all text-slate-400">
-                        <UploadIcon className="w-6 h-6 mb-2" />
-                        <span>Upload Audio File (MP3, WAV, M4A)</span>
+                      <div className={`w-full h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all
+                         ${subscription.minutesUsed >= subscription.maxMinutes 
+                            ? 'border-slate-700 bg-slate-800 text-slate-600' 
+                            : 'border-slate-600 hover:border-blue-500 hover:bg-slate-700/50 text-slate-400'}
+                      `}>
+                        {subscription.minutesUsed >= subscription.maxMinutes ? (
+                             <div className="flex flex-col items-center">
+                                 <LockIcon className="w-6 h-6 mb-2" />
+                                 <span>Upgrade to upload more</span>
+                             </div>
+                        ) : (
+                            <>
+                                <UploadIcon className="w-6 h-6 mb-2" />
+                                <span>Upload Audio File (MP3, WAV, M4A)</span>
+                            </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -403,31 +637,56 @@ const App: React.FC = () => {
               <div className="pt-4 border-t border-slate-700 space-y-4">
                 
                 {/* Language Selection */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Target Language</label>
+                <div className="relative">
+                  <div className="flex justify-between items-center mb-2">
+                     <label className="block text-sm font-medium text-slate-300">Target Language</label>
+                     {!subscription.canTranslate && (
+                         <button onClick={() => setShowPricing(true)} className="text-xs text-purple-400 hover:text-purple-300 flex items-center">
+                             <LockIcon className="w-3 h-3 mr-1"/> Unlock Translation
+                         </button>
+                     )}
+                  </div>
                   <select 
                     value={targetLang}
                     onChange={(e) => setTargetLang(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5"
                   >
                     {TARGET_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.name}</option>
+                      <option key={lang.code} value={lang.code}>
+                          {lang.name} {(!subscription.canTranslate && lang.code !== 'en') ? '(Locked)' : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
 
-                {/* Voice Selection */}
+                {/* Voice Selection & Speed */}
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-2">Speech Voice</label>
-                  <select 
-                    value={selectedVoice}
-                    onChange={(e) => setSelectedVoice(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5"
-                  >
-                    {VOICE_OPTIONS.map(voice => (
-                      <option key={voice.name} value={voice.name}>{voice.label}</option>
-                    ))}
-                  </select>
+                  <div className="flex space-x-4">
+                      <select 
+                        value={selectedVoice}
+                        onChange={(e) => setSelectedVoice(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5"
+                      >
+                        {VOICE_OPTIONS.map(voice => (
+                          <option key={voice.name} value={voice.name}>{voice.label}</option>
+                        ))}
+                      </select>
+                      
+                      {/* Speed Control */}
+                      <div className="flex items-center space-x-2 bg-slate-900 border border-slate-600 rounded-lg px-2">
+                         <span className="text-xs text-slate-400 font-bold whitespace-nowrap">Speed: {playbackRate}x</span>
+                         <input 
+                            type="range" 
+                            min="0.5" 
+                            max="2.0" 
+                            step="0.25" 
+                            value={playbackRate}
+                            onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                            className="w-16 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                         />
+                      </div>
+                  </div>
                 </div>
 
                 <button
@@ -466,6 +725,16 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Transcript</h2>
                 <div className="flex space-x-2">
+                  {result?.originalText && (
+                      <button 
+                        onClick={handleGenerateMindMap}
+                        className="text-xs flex items-center space-x-1 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md transition-colors"
+                        title="Visualize with Mind Map"
+                      >
+                        <MapIcon className="w-3 h-3" />
+                        <span>Visualize</span>
+                      </button>
+                  )}
                   {result?.originalText && (
                     <button 
                       onClick={() => handleCopy(result.originalText)}
@@ -517,9 +786,15 @@ const App: React.FC = () => {
                    <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded uppercase font-bold">
                      {targetLang}
                    </span>
+                   {result?.translatedText === "Upgrade to Advanced Plan to unlock translation." && (
+                       <button onClick={() => setShowPricing(true)} className="ml-2 text-purple-400 hover:text-white">
+                           <SparklesIcon className="w-4 h-4" />
+                       </button>
+                   )}
                 </div>
                 <div className="flex space-x-2">
-                  {result?.translatedText && (
+                  {/* Listen Button */}
+                  {result?.translatedText && result.translatedText !== "Upgrade to Advanced Plan to unlock translation." && (
                     <button
                       onClick={handlePlayAudio}
                       disabled={isGeneratingAudio}
@@ -538,6 +813,19 @@ const App: React.FC = () => {
                       <span>{isPlayingAudio ? 'Stop' : 'Listen'}</span>
                     </button>
                   )}
+                  
+                  {/* Audio Download Button */}
+                  {generatedAudioBase64 && !isGeneratingAudio && (
+                     <button
+                        onClick={handleDownloadAudio}
+                        className="text-xs flex items-center space-x-1 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-600/30 px-3 py-1.5 rounded-md transition-colors"
+                        title="Download Audio"
+                     >
+                        <DownloadIcon className="w-3 h-3" />
+                        <span>MP3</span>
+                     </button>
+                  )}
+
                   {result?.translatedText && (
                     <button 
                       onClick={() => handleCopy(result.translatedText || '')}

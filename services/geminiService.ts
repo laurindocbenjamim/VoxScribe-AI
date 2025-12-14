@@ -193,3 +193,31 @@ export const generateSpeech = async (text: string, voiceName: string = 'Kore'): 
     throw new Error("Failed to generate speech.");
   }
 };
+
+export const generateMindMap = async (text: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    const prompt = `
+      Create a detailed concept map or mind map based on the following text. 
+      The output must be strictly in Mermaid.js 'mindmap' syntax.
+      Do not include markdown code fences (like \`\`\`mermaid). 
+      Just return the raw mermaid code.
+      
+      Text to visualize:
+      "${text}"
+    `;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+    });
+    
+    let result = response.text?.trim() || "";
+    // Clean up if the model still wrapped it in markdown
+    result = result.replace(/^```mermaid\n?/, '').replace(/^```\n?/, '').replace(/```$/, '');
+    return result;
+  } catch (error) {
+    console.error("Mind Map generation error:", error);
+    throw new Error("Failed to generate mind map.");
+  }
+};

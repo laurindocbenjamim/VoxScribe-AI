@@ -17,7 +17,10 @@ const App: React.FC = () => {
   const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [generatedAudioBase64, setGeneratedAudioBase64] = useState<string | null>(null);
+  
+  // Mind Map State
   const [mindMapCode, setMindMapCode] = useState<string | null>(null);
+  const [visualizedText, setVisualizedText] = useState<string | null>(null);
   const [isMindMapModalOpen, setIsMindMapModalOpen] = useState(false);
   
   // Subscription State
@@ -62,6 +65,7 @@ const App: React.FC = () => {
     setRecordingDuration(0);
     setGeneratedAudioBase64(null);
     setMindMapCode(null);
+    setVisualizedText(null);
     stopAudioPlayback();
     // Cleanup existing blobs
     if (audioData?.url) {
@@ -194,6 +198,7 @@ const App: React.FC = () => {
     stopAudioPlayback();
     setGeneratedAudioBase64(null); // Reset audio when reprocessing
     setMindMapCode(null);
+    setVisualizedText(null);
 
     try {
       let transcript = "";
@@ -274,18 +279,16 @@ const App: React.FC = () => {
   };
 
   // --- Mind Map Logic ---
-  const handleGenerateMindMap = async () => {
-    const textToVisualize = result?.translatedText && result.translatedText !== "Upgrade to Advanced Plan to unlock translation."
-      ? result.translatedText 
-      : result?.originalText;
-
-    if (!textToVisualize) return;
+  const handleGenerateMindMap = async (text: string) => {
+    if (!text) return;
 
     try {
-        if (!mindMapCode) {
+        // Only regenerate if the text is different from what we last visualized
+        if (text !== visualizedText || !mindMapCode) {
             setStatus(AppStatus.PROCESSING);
-            const code = await generateMindMap(textToVisualize);
+            const code = await generateMindMap(text);
             setMindMapCode(code);
+            setVisualizedText(text);
             setStatus(AppStatus.COMPLETED);
         }
         setIsMindMapModalOpen(true);
@@ -727,7 +730,7 @@ const App: React.FC = () => {
                 <div className="flex space-x-2">
                   {result?.originalText && (
                       <button 
-                        onClick={handleGenerateMindMap}
+                        onClick={() => handleGenerateMindMap(result.originalText)}
                         className="text-xs flex items-center space-x-1 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md transition-colors"
                         title="Visualize with Mind Map"
                       >
@@ -812,6 +815,18 @@ const App: React.FC = () => {
                       )}
                       <span>{isPlayingAudio ? 'Stop' : 'Listen'}</span>
                     </button>
+                  )}
+                  
+                  {/* Visualize Button for Translation */}
+                  {result?.translatedText && result.translatedText !== "Upgrade to Advanced Plan to unlock translation." && (
+                      <button 
+                        onClick={() => handleGenerateMindMap(result.translatedText || "")}
+                        className="text-xs flex items-center space-x-1 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md transition-colors"
+                        title="Visualize Translation"
+                      >
+                        <MapIcon className="w-3 h-3" />
+                        <span>Visualize</span>
+                      </button>
                   )}
                   
                   {/* Audio Download Button */}

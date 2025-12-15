@@ -5,14 +5,21 @@ const STORAGE_KEY = 'voxscribe_subscription';
 const DEFAULT_STATE: SubscriptionState = {
   tier: 'free',
   minutesUsed: 0,
-  maxMinutes: 10, // 10 minutes free trial for new users
+  maxMinutes: 30, // Updated: 30 minutes limit for normal/free users
   canTranslate: false,
 };
 
 export const getSubscription = (): SubscriptionState => {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored) {
-    return JSON.parse(stored);
+    const parsed = JSON.parse(stored);
+    // Migration logic: If existing user has the old 10 min limit on free tier, upgrade them to 30
+    if (parsed.tier === 'free' && parsed.maxMinutes < 30) {
+        const upgraded = { ...parsed, maxMinutes: 30 };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(upgraded));
+        return upgraded;
+    }
+    return parsed;
   }
   // Initialize for new user
   localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_STATE));
@@ -41,14 +48,14 @@ export const upgradePlan = (tier: PlanTier): SubscriptionState => {
     newState = {
       ...current,
       tier: 'basic',
-      maxMinutes: 300,
+      maxMinutes: 120, // Upgrade to 2 hours
       canTranslate: false,
     };
   } else if (tier === 'advanced') {
     newState = {
       ...current,
       tier: 'advanced',
-      maxMinutes: 1000,
+      maxMinutes: 1000, // Upgrade to ~16 hours
       canTranslate: true,
     };
   } else {
@@ -71,6 +78,9 @@ export const activateDeveloperPlan = (): SubscriptionState => {
 };
 
 export const checkLimits = (current: SubscriptionState, requestedSeconds: number): boolean => {
+  // If user has virtually unlimited minutes (Developer), always return true
+  if (current.maxMinutes > 1000000) return true;
+
   const requestedMinutes = requestedSeconds / 60;
   return (current.minutesUsed + requestedMinutes) <= current.maxMinutes;
 };

@@ -2,9 +2,20 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import { GEMINI_MODEL_TRANSCRIPTION, GEMINI_MODEL_TRANSLATION, GEMINI_MODEL_TTS, SAMPLE_RATE } from "../constants";
 
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
+  // Safe access to process.env for browser environments where 'process' might not be defined
+  let apiKey: string | undefined;
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      apiKey = process.env.API_KEY;
+    }
+  } catch (e) {
+    // Ignore reference errors
+  }
+
   if (!apiKey) {
-    throw new Error("API Key is missing. Please check your environment configuration.");
+    // If you are deploying via Vercel/Netlify, ensure Environment Variables are set in the dashboard.
+    // If running locally, ensure .env exists.
+    throw new Error("API Key is missing. System configuration error.");
   }
   return new GoogleGenAI({ apiKey });
 };

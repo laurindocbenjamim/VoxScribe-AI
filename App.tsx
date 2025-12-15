@@ -1,15 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap, refineTextWithSearch, enhanceScientificText } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
-import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier } from './types';
+import { getCurrentUser, login, signup, logout } from './services/authService';
+import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier, User } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
 import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, WandIcon, AcademicIcon } from './components/Icons';
 import AudioVisualizer from './components/AudioVisualizer';
 import PricingModal from './components/PricingModal';
 import MindMapModal from './components/MindMapModal';
 import RefinementModal from './components/RefinementModal';
+import AuthModal from './components/AuthModal';
 
 const App: React.FC = () => {
+  const [user, setUser] = useState<User | null>(null);
+  const [showAuth, setShowAuth] = useState(true);
+  const [showOnboardingPlans, setShowOnboardingPlans] = useState(false);
+
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [error, setError] = useState<string | null>(null);
   const [audioData, setAudioData] = useState<AudioMetadata | null>(null);
@@ -55,6 +61,12 @@ const App: React.FC = () => {
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   useEffect(() => {
+    // Check for existing session
+    const currentUser = getCurrentUser();
+    if (currentUser) {
+      setUser(currentUser);
+      setShowAuth(false);
+    }
     // Refresh subscription on load
     setSubscription(getSubscription());
   }, []);
@@ -65,6 +77,36 @@ const App: React.FC = () => {
       audioSourceRef.current.playbackRate.value = playbackRate;
     }
   }, [playbackRate, isPlayingAudio]);
+
+  // Auth Handlers
+  const handleLogin = async (email: string, password: string) => {
+    try {
+        const u = await login(email, password); // Using mock params from modal but service mocks it
+        setUser(u);
+        setShowAuth(false);
+    } catch (e) {
+        showToast("Login failed");
+    }
+  };
+
+  const handleSignup = async (email: string, password: string) => {
+    try {
+        const u = await signup(email, password);
+        setUser(u);
+        setShowAuth(false);
+        // Show plans immediately after signup
+        setShowOnboardingPlans(true);
+    } catch (e) {
+        showToast("Signup failed");
+    }
+  };
+
+  const handleLogout = () => {
+    logout();
+    setUser(null);
+    setShowAuth(true);
+    resetApp();
+  };
 
   // Helper to reset app state
   const resetApp = () => {
@@ -110,6 +152,7 @@ const App: React.FC = () => {
     // Check limits before starting (approximating 1 second to start)
     if (!checkLimits(subscription, 1)) {
         setShowPricing(true);
+        // We set error to null because showing pricing modal is the action
         return;
     }
 
@@ -201,7 +244,7 @@ const App: React.FC = () => {
     const estimatedDuration = audioData.duration || 60; // Fallback 1 min if unknown
     if (!checkLimits(subscription, estimatedDuration)) {
         setShowPricing(true);
-        setError("You have reached your usage limit. Please upgrade to continue.");
+        setError("Usage limit reached. Please update your plan to continue.");
         return;
     }
 
@@ -268,6 +311,9 @@ const App: React.FC = () => {
     const newState = upgradePlan(tier);
     setSubscription(newState);
     showToast(`Successfully upgraded to ${tier.charAt(0).toUpperCase() + tier.slice(1)} Plan!`);
+    // Close modals
+    setShowPricing(false);
+    setShowOnboardingPlans(false);
   };
 
   // --- Share/Copy Logic ---
@@ -574,7 +620,26 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8">
-      {showPricing && (
+      {/* Auth Modal */}
+      {showAuth && !user && (
+         <AuthModal 
+            onLogin={() => handleLogin('demo@example.com', 'password')} // Mock
+            onSignup={() => handleSignup('demo@example.com', 'password')} // Mock
+         />
+      )}
+
+      {/* Onboarding Plan Selection */}
+      {showOnboardingPlans && (
+         <PricingModal 
+            currentTier={'free'} // Technically they are free until they pick one
+            onUpgrade={handleUpgrade}
+            onClose={() => {}} // Can't close without picking
+            isOnboarding={true}
+         />
+      )}
+
+      {/* Standard Pricing Modal */}
+      {showPricing && !showOnboardingPlans && (
           <PricingModal 
             currentTier={subscription.tier} 
             onUpgrade={handleUpgrade} 
@@ -625,6 +690,17 @@ const App: React.FC = () => {
           </div>
           
           <div className="flex flex-col items-end space-y-3">
+             <div className="flex items-center space-x-4">
+                {user && (
+                    <div className="flex items-center space-x-2">
+                        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold">
+                            {user.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-sm text-slate-300 hidden sm:block">{user.email}</span>
+                        <button onClick={handleLogout} className="text-xs text-slate-500 hover:text-red-400 ml-2">Logout</button>
+                    </div>
+                )}
+             </div>
             <UsageBar />
             <div className="flex items-center space-x-2 text-sm text-slate-500">
                 <span className={`h-2.5 w-2.5 rounded-full ${status === AppStatus.PROCESSING || status === AppStatus.TRANSCRIBING ? 'bg-amber-400 animate-pulse' : status === AppStatus.COMPLETED ? 'bg-green-400' : 'bg-slate-600'}`}></span>
@@ -634,7 +710,7 @@ const App: React.FC = () => {
         </header>
 
         {/* Main Content Grid */}
-        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <main className={`grid grid-cols-1 lg:grid-cols-12 gap-8 ${(showAuth || showOnboardingPlans) ? 'blur-sm pointer-events-none' : ''}`}>
           
           {/* Left Column: Input Controls */}
           <section className="lg:col-span-5 space-y-6">
@@ -853,7 +929,7 @@ const App: React.FC = () => {
                         title="Enhance with IEEE Citations & Links"
                       >
                         <AcademicIcon className="w-3 h-3" />
-                        <span>Scientific (IEEE)</span>
+                        <span>Refine Content</span>
                       </button>
                   )}
                   {result?.originalText && (

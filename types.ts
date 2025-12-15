@@ -42,3 +42,10 @@ export interface SubscriptionState {
   maxMinutes: number;
   canTranslate: boolean;
 }
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  isLoggedIn: boolean;
+}

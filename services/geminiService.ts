@@ -14,7 +14,8 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
-      const base64 = result.split(',')[1];
+      // Handle cases where the Data URI might not have a comma (empty) or standard format
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64);
     };
     reader.onerror = reject;
@@ -25,7 +26,8 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
 // --- Audio Processing Logic ---
 
 /**
- * Transcribes audio using Gemini 2.5 Flash
+ * Transcribes audio using Gemini 2.5 Flash via inline data.
+ * Best for short audio clips (< 10MB).
  */
 export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promise<string> => {
   const ai = getAiClient();
@@ -52,25 +54,63 @@ export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promis
     return response.text?.trim() || "";
   } catch (error) {
     console.error("Transcription error:", error);
-    throw new Error("Failed to transcribe audio.");
+    throw new Error("Failed to transcribe audio segment.");
   }
 };
 
 /**
- * Handling for large files: Uses Gemini File API to upload and process files > 20MB or long duration.
- * This prevents browser crashes caused by decoding large AudioBuffers in memory.
+ * Fallback method: Splits large audio into chunks and transcribes them sequentially.
+ * This is used when the File API fails or for files that are large but manageable via chunking.
+ * It's safer for browser environments where File API uploads might encounter network constraints.
+ */
+const transcribeAudioChunked = async (file: Blob, mimeType: string): Promise<string> => {
+    // 6MB chunks to stay safely within the 20MB payload limit (considering Base64 overhead)
+    const CHUNK_SIZE = 6 * 1024 * 1024; 
+    let offset = 0;
+    const chunks: Blob[] = [];
+    
+    // Split the file
+    while (offset < file.size) {
+        const chunk = file.slice(offset, offset + CHUNK_SIZE, mimeType);
+        chunks.push(chunk);
+        offset += CHUNK_SIZE;
+    }
+
+    console.log(`Split audio into ${chunks.length} chunks for processing.`);
+    let fullTranscript = "";
+    
+    // Process sequentially to maintain order and context
+    for (let i = 0; i < chunks.length; i++) {
+        try {
+            // console.log(`Processing chunk ${i + 1}/${chunks.length}`);
+            // Slightly different prompt for chunks to handle continuity
+            const chunkTranscript = await transcribeAudio(chunks[i], mimeType);
+            fullTranscript += (fullTranscript ? " " : "") + chunkTranscript;
+        } catch (e) {
+            console.warn(`Failed to transcribe chunk ${i + 1}`, e);
+            fullTranscript += ` [Error in segment ${i+1}] `;
+        }
+    }
+    
+    return fullTranscript;
+};
+
+/**
+ * Handling for large files: 
+ * 1. Tries Gemini File API first (efficient for >20MB).
+ * 2. Falls back to Client-Side Chunking if File API fails.
  */
 export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
   const ai = getAiClient();
 
-  // If file is reasonably small (under 20MB), use the faster inline method
-  if (file.size < 20 * 1024 * 1024) {
+  // If file is small, use the faster inline method immediately
+  if (file.size < 6 * 1024 * 1024) { 
       return transcribeAudio(file, file.type || 'audio/mp3');
   }
 
   try {
-    // 1. Upload to Gemini File API
-    // The SDK handles the upload of the Blob directly
+    // 1. Attempt Upload to Gemini File API
+    // Note: Browser uploads via SDK might fail depending on CORS/Env configuration
     const uploadResponse = await ai.files.upload({
       file: file,
       config: { 
@@ -79,19 +119,32 @@ export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
       }
     });
 
-    const fileUri = uploadResponse.file.uri;
-    const fileName = uploadResponse.file.name;
+    // Check for valid response structure (handle potential SDK variations)
+    const uploadedFile = uploadResponse.file || (uploadResponse as any);
+
+    if (!uploadedFile || !uploadedFile.uri) {
+        throw new Error("File API returned invalid response (missing URI).");
+    }
+
+    const fileUri = uploadedFile.uri;
+    const fileName = uploadedFile.name;
 
     // 2. Poll for processing completion
-    // Large files take a moment to change state from PROCESSING to ACTIVE
-    let fileState = uploadResponse.file.state;
-    while (fileState === 'PROCESSING') {
+    let fileState = uploadedFile.state;
+    // Add a timeout loop to prevent infinite waiting
+    let attempts = 0;
+    while (fileState === 'PROCESSING' && attempts < 60) { // Max wait ~5 mins
       await new Promise(resolve => setTimeout(resolve, 5000));
       const getResponse = await ai.files.get({ name: fileName });
       fileState = getResponse.file.state;
       if (fileState === 'FAILED') {
         throw new Error("Audio processing failed on the server.");
       }
+      attempts++;
+    }
+
+    if (fileState === 'PROCESSING') {
+         throw new Error("File processing timed out.");
     }
 
     // 3. Generate Transcription using the file URI
@@ -102,7 +155,7 @@ export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
           { 
             fileData: { 
               fileUri: fileUri, 
-              mimeType: uploadResponse.file.mimeType 
+              mimeType: uploadedFile.mimeType 
             } 
           },
           { 
@@ -115,8 +168,10 @@ export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
     return response.text?.trim() || "";
 
   } catch (error) {
-    console.error("Large file transcription error:", error);
-    throw new Error("Failed to process large audio file. Please try a smaller file or ensure your internet connection is stable.");
+    console.error("Large file transcription error (File API), switching to Chunking Fallback:", error);
+    // FALLBACK: Client-side Chunking
+    // This splits the file into smaller pieces and processes them one by one.
+    return transcribeAudioChunked(file, file.type || 'audio/mp3');
   }
 };
 

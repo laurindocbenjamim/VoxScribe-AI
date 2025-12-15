@@ -59,6 +59,17 @@ export const upgradePlan = (tier: PlanTier): SubscriptionState => {
   return newState;
 };
 
+export const activateDeveloperPlan = (): SubscriptionState => {
+  const devState: SubscriptionState = {
+    tier: 'advanced', // Uses advanced UI features
+    minutesUsed: 0,
+    maxMinutes: 999999999, // Effectively unlimited
+    canTranslate: true,
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(devState));
+  return devState;
+};
+
 export const checkLimits = (current: SubscriptionState, requestedSeconds: number): boolean => {
   const requestedMinutes = requestedSeconds / 60;
   return (current.minutesUsed + requestedMinutes) <= current.maxMinutes;

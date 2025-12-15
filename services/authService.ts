@@ -1,4 +1,5 @@
 import { User } from "../types";
+import { activateDeveloperPlan } from "./subscriptionService";
 
 const USER_STORAGE_KEY = 'voxscribe_user';
 
@@ -8,9 +9,22 @@ export const getCurrentUser = (): User | null => {
 };
 
 export const login = async (email: string, password: string): Promise<User> => {
-  // Mock login - allow any email/password for prototype
   if (!email || !password) throw new Error("Email and password are required");
-  
+
+  // Developer Backdoor
+  if (email === "feti@voxscribe.pt" && password === "V123#") {
+    const devUser: User = {
+      id: 'dev-admin-' + Date.now(),
+      email: email,
+      name: 'Developer Admin',
+      isLoggedIn: true
+    };
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(devUser));
+    activateDeveloperPlan(); // Grant unlimited access
+    return devUser;
+  }
+
+  // Mock login - allow any other email/password for prototype
   const user: User = {
     id: 'user-' + Date.now(),
     email,
@@ -42,5 +56,7 @@ export const signup = async (email: string, password: string): Promise<User> => 
 
 export const logout = () => {
   localStorage.removeItem(USER_STORAGE_KEY);
-  window.location.reload(); // Simple reload to reset app state
+  // Optional: Reset subscription on logout? For now, we leave local storage as is 
+  // or we could reset it. To keep the app simple, we reload.
+  window.location.reload(); 
 };

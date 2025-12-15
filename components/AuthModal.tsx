@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { GoogleIcon, FacebookIcon } from './Icons';
 
 interface AuthModalProps {
-  onLogin: () => void;
-  onSignup: () => void;
+  onLogin: (email: string, password: string) => void;
+  onSignup: (email: string, password: string) => void;
   onSocialLogin: (provider: 'google' | 'facebook') => void;
 }
 
@@ -20,9 +20,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLogin, onSignup, onSocialLogin 
     setTimeout(() => {
       setLoading(false);
       if (isLogin) {
-        onLogin();
+        onLogin(email, password);
       } else {
-        onSignup();
+        onSignup(email, password);
       }
     }, 1000);
   };

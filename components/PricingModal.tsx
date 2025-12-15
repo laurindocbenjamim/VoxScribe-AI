@@ -50,7 +50,7 @@ const PricingModal: React.FC<PricingModalProps> = ({ currentTier, onUpgrade, onC
               </div>
               <ul className="space-y-3 mb-8">
                 <li className="flex items-center text-sm text-slate-300">
-                  <CheckIcon className="w-4 h-4 mr-2 text-green-400" /> 30 Minutes Total
+                  <CheckIcon className="w-4 h-4 mr-2 text-green-400" /> 10 Minutes Total
                 </li>
                 <li className="flex items-center text-sm text-slate-300">
                   <CheckIcon className="w-4 h-4 mr-2 text-green-400" /> Basic Transcription

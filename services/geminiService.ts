@@ -198,10 +198,15 @@ export const generateMindMap = async (text: string): Promise<string> => {
   const ai = getAiClient();
   try {
     const prompt = `
-      Create a detailed concept map or mind map based on the following text. 
-      The output must be strictly in Mermaid.js 'mindmap' syntax.
-      Do not include markdown code fences (like \`\`\`mermaid). 
-      Just return the raw mermaid code.
+      Create a concept map/mind map based on the following text using strictly Mermaid.js 'mindmap' syntax.
+
+      Rules for the output:
+      1. Start with the keyword 'mindmap' on the first line.
+      2. Use indentation (2 spaces or 4 spaces) to define the hierarchy.
+      3. Important: If any node text contains parentheses '()' or special characters, you MUST enclose the text in double quotes. 
+         Example: "Lucy (Australopithecus)"
+      4. Do not use Markdown code fences (no \`\`\`mermaid). Return only the raw code.
+      5. Keep labels concise.
       
       Text to visualize:
       "${text}"

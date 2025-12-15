@@ -5,7 +5,7 @@ const STORAGE_KEY = 'voxscribe_subscription';
 const DEFAULT_STATE: SubscriptionState = {
   tier: 'free',
   minutesUsed: 0,
-  maxMinutes: 30, // 30 minutes free trial for new users
+  maxMinutes: 10, // 10 minutes free trial for new users
   canTranslate: false,
 };
 

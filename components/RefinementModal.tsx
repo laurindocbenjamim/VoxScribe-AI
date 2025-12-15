@@ -1,5 +1,5 @@
-import React from 'react';
-import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon } from './Icons';
+import React, { useState } from 'react';
+import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon, EyeIcon, EyeOffIcon } from './Icons';
 
 interface RefinementModalProps {
   originalText: string;
@@ -24,10 +24,11 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
   isPlaying,
   isGeneratingAudio
 }) => {
+  const [showOriginal, setShowOriginal] = useState(true);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
-      <div className="bg-slate-900 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col border border-slate-700 shadow-2xl">
+      <div className="bg-slate-900 rounded-2xl w-full max-w-6xl max-h-[90vh] flex flex-col border border-slate-700 shadow-2xl transition-all duration-300">
         {/* Header */}
         <div className="p-6 border-b border-slate-700 flex justify-between items-center">
           <div>
@@ -39,26 +40,38 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
             </h2>
             <p className="text-slate-400 text-sm mt-1">Corrected using Deep Search & Grammar Analysis</p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
+          <div className="flex items-center space-x-4">
+             <button
+                onClick={() => setShowOriginal(!showOriginal)}
+                className="flex items-center space-x-2 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors border border-slate-700 hover:border-slate-500"
+                title={showOriginal ? "Hide Original Text" : "Show Original Text"}
+            >
+                {showOriginal ? <EyeOffIcon className="w-5 h-5"/> : <EyeIcon className="w-5 h-5"/>}
+                <span className="text-sm font-medium hidden sm:inline">{showOriginal ? 'Hide Original' : 'Show Original'}</span>
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-8 bg-slate-950">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
+          <div className={`grid grid-cols-1 ${showOriginal ? 'md:grid-cols-2' : ''} gap-6 h-full transition-all duration-300 ease-in-out`}>
             {/* Original */}
-            <div className="flex flex-col">
-                 <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-2">Original</h3>
-                 <div className="flex-1 p-4 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 overflow-y-auto max-h-[50vh] whitespace-pre-wrap">
-                    {originalText}
-                 </div>
-            </div>
+            {showOriginal && (
+                <div className="flex flex-col animate-fadeIn">
+                    <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-2">Original</h3>
+                    <div className="flex-1 p-4 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 overflow-y-auto max-h-[50vh] whitespace-pre-wrap">
+                        {originalText}
+                    </div>
+                </div>
+            )}
             
             {/* Refined */}
-            <div className="flex flex-col">
+            <div className="flex flex-col h-full">
                  <h3 className="text-sm font-semibold text-green-500 uppercase tracking-wider mb-2">Refined & Corrected</h3>
-                 <div className="flex-1 p-4 rounded-xl bg-slate-800/50 border border-green-500/30 text-slate-200 overflow-y-auto max-h-[50vh] whitespace-pre-wrap shadow-[0_0_15px_rgba(34,197,94,0.1)]">
+                 <div className="flex-1 p-6 rounded-xl bg-slate-800/50 border border-green-500/30 text-slate-200 overflow-y-auto max-h-[50vh] whitespace-pre-wrap shadow-[0_0_15px_rgba(34,197,94,0.1)] text-lg leading-relaxed">
                     {refinedText}
                  </div>
             </div>

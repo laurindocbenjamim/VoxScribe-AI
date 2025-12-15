@@ -30,6 +30,7 @@ const App: React.FC = () => {
   // Refinement State
   const [isRefinementModalOpen, setIsRefinementModalOpen] = useState(false);
   const [refinedText, setRefinedText] = useState<string | null>(null);
+  const [isRegeneratingRefinement, setIsRegeneratingRefinement] = useState(false);
   
   // Subscription State
   const [subscription, setSubscription] = useState<SubscriptionState>(getSubscription());
@@ -308,6 +309,26 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRegenerateRefinement = async () => {
+    const textToRefine = result?.originalText;
+    if (!textToRefine) return;
+
+    setIsRegeneratingRefinement(true);
+    
+    try {
+        const corrected = await refineTextWithSearch(textToRefine);
+        setRefinedText(corrected);
+        // If we are currently playing the old text, stop it
+        if (isPlayingAudio && currentPlayingText === refinedText) {
+            stopAudioPlayback();
+        }
+    } catch (err: any) {
+        setError("Failed to regenerate refined text.");
+    } finally {
+        setIsRegeneratingRefinement(false);
+    }
+  };
+
   // --- Mind Map Logic ---
   const handleGenerateMindMap = async (text: string) => {
     if (!text) return;
@@ -552,6 +573,8 @@ const App: React.FC = () => {
             onDownloadAudio={handleDownloadAudio}
             onCopy={handleCopy}
             onVisualize={handleGenerateMindMap}
+            onRegenerate={handleRegenerateRefinement}
+            isRegenerating={isRegeneratingRefinement}
             isPlaying={isPlayingAudio && currentPlayingText === refinedText}
             isGeneratingAudio={isGeneratingAudio && currentPlayingText === refinedText}
         />

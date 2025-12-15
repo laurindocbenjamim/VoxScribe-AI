@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon, EyeIcon, EyeOffIcon } from './Icons';
+import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon, EyeIcon, EyeOffIcon, RefreshIcon } from './Icons';
 
 interface RefinementModalProps {
   originalText: string;
@@ -9,6 +9,8 @@ interface RefinementModalProps {
   onDownloadAudio: (text: string) => void;
   onCopy: (text: string) => void;
   onVisualize: (text: string) => void;
+  onRegenerate: () => void;
+  isRegenerating: boolean;
   isPlaying: boolean;
   isGeneratingAudio: boolean;
 }
@@ -21,6 +23,8 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
   onDownloadAudio,
   onCopy,
   onVisualize,
+  onRegenerate,
+  isRegenerating,
   isPlaying,
   isGeneratingAudio
 }) => {
@@ -40,7 +44,16 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
             </h2>
             <p className="text-slate-400 text-sm mt-1">Corrected using Deep Search & Grammar Analysis</p>
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+             <button
+                onClick={onRegenerate}
+                disabled={isRegenerating}
+                className={`flex items-center space-x-2 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors border border-slate-700 hover:border-slate-500 ${isRegenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                title="Regenerate Refined Text"
+            >
+                <RefreshIcon className={`w-5 h-5 ${isRegenerating ? 'animate-spin' : ''}`} />
+                <span className="text-sm font-medium hidden sm:inline">{isRegenerating ? 'Regenerating...' : 'Regenerate'}</span>
+            </button>
              <button
                 onClick={() => setShowOriginal(!showOriginal)}
                 className="flex items-center space-x-2 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors border border-slate-700 hover:border-slate-500"
@@ -49,7 +62,7 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
                 {showOriginal ? <EyeOffIcon className="w-5 h-5"/> : <EyeIcon className="w-5 h-5"/>}
                 <span className="text-sm font-medium hidden sm:inline">{showOriginal ? 'Hide Original' : 'Show Original'}</span>
             </button>
-            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
+            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors ml-2">
                 <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
           </div>
@@ -71,7 +84,7 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
             {/* Refined */}
             <div className="flex flex-col h-full">
                  <h3 className="text-sm font-semibold text-green-500 uppercase tracking-wider mb-2">Refined & Corrected</h3>
-                 <div className="flex-1 p-6 rounded-xl bg-slate-800/50 border border-green-500/30 text-slate-200 overflow-y-auto max-h-[50vh] whitespace-pre-wrap shadow-[0_0_15px_rgba(34,197,94,0.1)] text-lg leading-relaxed">
+                 <div className={`flex-1 p-6 rounded-xl bg-slate-800/50 border border-green-500/30 text-slate-200 overflow-y-auto max-h-[50vh] whitespace-pre-wrap shadow-[0_0_15px_rgba(34,197,94,0.1)] text-lg leading-relaxed ${isRegenerating ? 'opacity-50 animate-pulse' : ''}`}>
                     {refinedText}
                  </div>
             </div>
@@ -83,7 +96,7 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
             <div className="flex flex-wrap items-center justify-end gap-3">
                 <button
                     onClick={() => onPlay(refinedText)}
-                    disabled={isGeneratingAudio}
+                    disabled={isGeneratingAudio || isRegenerating}
                     className={`flex items-center space-x-2 px-4 py-2.5 rounded-lg font-medium transition-all ${
                     isPlaying 
                         ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50' 
@@ -100,7 +113,8 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
 
                 <button
                     onClick={() => onDownloadAudio(refinedText)}
-                    className="flex items-center space-x-2 px-4 py-2.5 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-600/30 rounded-lg font-medium transition-all"
+                    disabled={isRegenerating}
+                    className="flex items-center space-x-2 px-4 py-2.5 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-600/30 rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     <DownloadIcon className="w-4 h-4" />
                     <span>Download Audio</span>
@@ -108,7 +122,8 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
 
                 <button
                     onClick={() => onCopy(refinedText)}
-                    className="flex items-center space-x-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-all"
+                    disabled={isRegenerating}
+                    className="flex items-center space-x-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     <CopyIcon className="w-4 h-4" />
                     <span>Copy Text</span>
@@ -116,7 +131,8 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
 
                 <button
                     onClick={() => onVisualize(refinedText)}
-                    className="flex items-center space-x-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-indigo-500/25"
+                    disabled={isRegenerating}
+                    className="flex items-center space-x-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-indigo-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     <MapIcon className="w-4 h-4" />
                     <span>Visualize Map</span>

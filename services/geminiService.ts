@@ -221,3 +221,31 @@ export const generateMindMap = async (text: string): Promise<string> => {
     throw new Error("Failed to generate mind map.");
   }
 };
+
+export const refineTextWithSearch = async (text: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    const prompt = `
+      Please review the following transcript. It may contain errors, gaps, or misheard terms.
+      Use your knowledge and search tools to correct grammar, fill in logical gaps, and verify proper nouns or technical terms.
+      
+      Return ONLY the corrected and refined text.
+      
+      Transcript:
+      "${text}"
+    `;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        tools: [{googleSearch: {}}],
+      }
+    });
+    
+    return response.text?.trim() || "";
+  } catch (error) {
+    console.error("Refinement error:", error);
+    throw new Error("Failed to refine text.");
+  }
+};

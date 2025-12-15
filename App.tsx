@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap } from './services/geminiService';
+import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap, refineTextWithSearch } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
 import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
-import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon } from './components/Icons';
+import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, WandIcon } from './components/Icons';
 import AudioVisualizer from './components/AudioVisualizer';
 import PricingModal from './components/PricingModal';
 import MindMapModal from './components/MindMapModal';
+import RefinementModal from './components/RefinementModal';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
@@ -16,12 +17,19 @@ const App: React.FC = () => {
   const [targetLang, setTargetLang] = useState<string>('en'); 
   const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  
+  // Audio Playback State
   const [generatedAudioBase64, setGeneratedAudioBase64] = useState<string | null>(null);
+  const [currentPlayingText, setCurrentPlayingText] = useState<string | null>(null);
   
   // Mind Map State
   const [mindMapCode, setMindMapCode] = useState<string | null>(null);
   const [visualizedText, setVisualizedText] = useState<string | null>(null);
   const [isMindMapModalOpen, setIsMindMapModalOpen] = useState(false);
+
+  // Refinement State
+  const [isRefinementModalOpen, setIsRefinementModalOpen] = useState(false);
+  const [refinedText, setRefinedText] = useState<string | null>(null);
   
   // Subscription State
   const [subscription, setSubscription] = useState<SubscriptionState>(getSubscription());
@@ -38,7 +46,7 @@ const App: React.FC = () => {
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
 
-  // Audio Playback State
+  // Audio Context State
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -64,8 +72,10 @@ const App: React.FC = () => {
     setError(null);
     setRecordingDuration(0);
     setGeneratedAudioBase64(null);
+    setCurrentPlayingText(null);
     setMindMapCode(null);
     setVisualizedText(null);
+    setRefinedText(null);
     stopAudioPlayback();
     // Cleanup existing blobs
     if (audioData?.url) {
@@ -197,8 +207,10 @@ const App: React.FC = () => {
     setError(null);
     stopAudioPlayback();
     setGeneratedAudioBase64(null); // Reset audio when reprocessing
+    setCurrentPlayingText(null);
     setMindMapCode(null);
     setVisualizedText(null);
+    setRefinedText(null);
 
     try {
       let transcript = "";
@@ -256,7 +268,7 @@ const App: React.FC = () => {
     showToast(`Successfully upgraded to ${tier.charAt(0).toUpperCase() + tier.slice(1)} Plan!`);
   };
 
-  // --- Share Logic ---
+  // --- Share/Copy Logic ---
   const handleShare = async (text: string) => {
     if (navigator.share) {
       try {
@@ -272,15 +284,36 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Copy Logic ---
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     showToast("Copied to clipboard!");
   };
 
+  // --- Refinement Logic ---
+  const handleRefineText = async () => {
+    const textToRefine = result?.originalText;
+    if (!textToRefine) return;
+
+    try {
+        if (!refinedText) {
+            setStatus(AppStatus.PROCESSING);
+            const corrected = await refineTextWithSearch(textToRefine);
+            setRefinedText(corrected);
+            setStatus(AppStatus.COMPLETED);
+        }
+        setIsRefinementModalOpen(true);
+    } catch (err: any) {
+        setError("Failed to refine text. Please try again.");
+        setStatus(AppStatus.COMPLETED);
+    }
+  };
+
   // --- Mind Map Logic ---
   const handleGenerateMindMap = async (text: string) => {
     if (!text) return;
+    
+    // Close refinement modal if open to show map
+    if (isRefinementModalOpen) setIsRefinementModalOpen(false);
 
     try {
         // Only regenerate if the text is different from what we last visualized
@@ -307,22 +340,29 @@ const App: React.FC = () => {
     setIsPlayingAudio(false);
   };
 
-  const handlePlayAudio = async () => {
+  const handlePlayAudio = async (text: string) => {
     if (isPlayingAudio) {
       stopAudioPlayback();
-      return;
+      // If pressing play on the same text, just stop.
+      // If pressing play on different text, stop current and start new.
+      if (text === currentPlayingText) {
+          return; 
+      }
     }
 
-    if (!result?.translatedText) return;
+    if (!text) return;
 
     setIsGeneratingAudio(true);
+    setCurrentPlayingText(text);
+
     try {
       let base64Audio = generatedAudioBase64;
-
-      // Only fetch if not already cached
-      if (!base64Audio) {
-        base64Audio = await generateSpeech(result.translatedText, selectedVoice);
-        setGeneratedAudioBase64(base64Audio);
+      
+      // If text is different from what we generated before, we must regenerate
+      // We are only caching one audio for simplicity (or strictly playing one at a time)
+      if (text !== currentPlayingText || !base64Audio) {
+          base64Audio = await generateSpeech(text, selectedVoice);
+          setGeneratedAudioBase64(base64Audio); // Cache this session
       }
 
       if (!base64Audio) return;
@@ -367,17 +407,24 @@ const App: React.FC = () => {
     }
   };
 
-  const handleDownloadAudio = () => {
-    if (!generatedAudioBase64) return;
+  const handleDownloadAudio = async (text: string) => {
+    // We need to ensure we have the audio data for the *specific* text requested.
+    // If it matches cache, use it, otherwise generate temp.
+    let base64ToDownload = generatedAudioBase64;
+
+    if (text !== currentPlayingText || !base64ToDownload) {
+        // Generate on the fly if we haven't played it or it's different
+        try {
+            base64ToDownload = await generateSpeech(text, selectedVoice);
+        } catch (e) {
+            setError("Failed to generate audio for download.");
+            return;
+        }
+    }
+
+    if (!base64ToDownload) return;
     
-    // Create simple WAV header or just save raw PCM? 
-    // To make it playable everywhere, we should wrap the PCM in a WAV container.
-    // However, for simplicity here, we assume the user's system can handle raw or we reuse the WAV encoder helper from service
-    // But since the service helper takes Float32, let's just decode the base64 -> Uint8 -> Int16 -> Blob as generic octet stream or try to wrap it.
-    // A simpler approach for the User is to convert the raw PCM data we got into a WAV blob using the existing helper.
-    
-    // Re-use logic to get PCM data
-    const binaryString = atob(generatedAudioBase64);
+    const binaryString = atob(base64ToDownload);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
@@ -389,10 +436,7 @@ const App: React.FC = () => {
         float32Samples[i] = dataInt16[i] / 32768.0;
     }
 
-    // Use the internal function logic here (duplicated briefly or exported).
-    // Let's create a quick local WAV encoder to avoid exporting internal service logic if it wasn't exported.
-    // Actually, `encodeWAV` is not exported from service. I will do a raw raw download or implement a quick WAV wrapper here.
-    
+    // WAV Header construction
     const buffer = new ArrayBuffer(44 + float32Samples.length * 2);
     const view = new DataView(buffer);
     const sampleRate = 24000;
@@ -428,7 +472,7 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(wavBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `speech-${targetLang}.wav`;
+    a.download = `speech-output.wav`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -496,6 +540,20 @@ const App: React.FC = () => {
         <MindMapModal 
             mermaidCode={mindMapCode} 
             onClose={() => setIsMindMapModalOpen(false)} 
+        />
+      )}
+
+      {isRefinementModalOpen && refinedText && result?.originalText && (
+        <RefinementModal
+            originalText={result.originalText}
+            refinedText={refinedText}
+            onClose={() => setIsRefinementModalOpen(false)}
+            onPlay={handlePlayAudio}
+            onDownloadAudio={handleDownloadAudio}
+            onCopy={handleCopy}
+            onVisualize={handleGenerateMindMap}
+            isPlaying={isPlayingAudio && currentPlayingText === refinedText}
+            isGeneratingAudio={isGeneratingAudio && currentPlayingText === refinedText}
         />
       )}
 
@@ -728,6 +786,17 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Transcript</h2>
                 <div className="flex space-x-2">
+                  {/* Refine/Fix Button */}
+                  {result?.originalText && (
+                      <button 
+                        onClick={handleRefineText}
+                        className="text-xs flex items-center space-x-1 bg-teal-600/20 hover:bg-teal-600/40 text-teal-400 border border-teal-600/30 px-3 py-1.5 rounded-md transition-colors"
+                        title="Fix Gaps with Deep Search"
+                      >
+                        <WandIcon className="w-3 h-3" />
+                        <span>Fix Gaps</span>
+                      </button>
+                  )}
                   {result?.originalText && (
                       <button 
                         onClick={() => handleGenerateMindMap(result.originalText)}
@@ -799,21 +868,21 @@ const App: React.FC = () => {
                   {/* Listen Button */}
                   {result?.translatedText && result.translatedText !== "Upgrade to Advanced Plan to unlock translation." && (
                     <button
-                      onClick={handlePlayAudio}
+                      onClick={() => handlePlayAudio(result.translatedText || '')}
                       disabled={isGeneratingAudio}
                       className={`text-xs flex items-center space-x-1 px-3 py-1.5 rounded-md transition-colors ${
-                        isPlayingAudio 
+                        isPlayingAudio && currentPlayingText === result.translatedText
                           ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50' 
                           : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
                       }`}
                       title="Read Aloud"
                     >
-                      {isGeneratingAudio ? (
+                      {isGeneratingAudio && currentPlayingText === result.translatedText ? (
                         <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div>
                       ) : (
                         <SpeakerIcon className="w-3 h-3" />
                       )}
-                      <span>{isPlayingAudio ? 'Stop' : 'Listen'}</span>
+                      <span>{isPlayingAudio && currentPlayingText === result.translatedText ? 'Stop' : 'Listen'}</span>
                     </button>
                   )}
                   
@@ -832,7 +901,7 @@ const App: React.FC = () => {
                   {/* Audio Download Button */}
                   {generatedAudioBase64 && !isGeneratingAudio && (
                      <button
-                        onClick={handleDownloadAudio}
+                        onClick={() => handleDownloadAudio(result.translatedText || '')}
                         className="text-xs flex items-center space-x-1 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-600/30 px-3 py-1.5 rounded-md transition-colors"
                         title="Download Audio"
                      >

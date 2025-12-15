@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap, refineTextWithSearch } from './services/geminiService';
+import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap, refineTextWithSearch, enhanceScientificText } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
 import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
-import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, WandIcon } from './components/Icons';
+import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, WandIcon, AcademicIcon } from './components/Icons';
 import AudioVisualizer from './components/AudioVisualizer';
 import PricingModal from './components/PricingModal';
 import MindMapModal from './components/MindMapModal';
@@ -31,6 +31,7 @@ const App: React.FC = () => {
   const [isRefinementModalOpen, setIsRefinementModalOpen] = useState(false);
   const [refinedText, setRefinedText] = useState<string | null>(null);
   const [isRegeneratingRefinement, setIsRegeneratingRefinement] = useState(false);
+  const [refinementType, setRefinementType] = useState<'standard' | 'scientific'>('standard');
   
   // Subscription State
   const [subscription, setSubscription] = useState<SubscriptionState>(getSubscription());
@@ -295,6 +296,7 @@ const App: React.FC = () => {
     const textToRefine = result?.originalText;
     if (!textToRefine) return;
 
+    setRefinementType('standard');
     try {
         if (!refinedText) {
             setStatus(AppStatus.PROCESSING);
@@ -308,6 +310,24 @@ const App: React.FC = () => {
         setStatus(AppStatus.COMPLETED);
     }
   };
+  
+  const handleScientificEnhance = async () => {
+    const textToRefine = result?.originalText;
+    if (!textToRefine) return;
+
+    setRefinementType('scientific');
+    try {
+        // Always regenerate for scientific enhancement as it's a specific action
+        setStatus(AppStatus.PROCESSING);
+        const enhanced = await enhanceScientificText(textToRefine);
+        setRefinedText(enhanced);
+        setStatus(AppStatus.COMPLETED);
+        setIsRefinementModalOpen(true);
+    } catch (err: any) {
+        setError("Failed to enhance scientific text. Please try again.");
+        setStatus(AppStatus.COMPLETED);
+    }
+  };
 
   const handleRegenerateRefinement = async () => {
     const textToRefine = result?.originalText;
@@ -316,7 +336,12 @@ const App: React.FC = () => {
     setIsRegeneratingRefinement(true);
     
     try {
-        const corrected = await refineTextWithSearch(textToRefine);
+        let corrected = "";
+        if (refinementType === 'scientific') {
+            corrected = await enhanceScientificText(textToRefine);
+        } else {
+            corrected = await refineTextWithSearch(textToRefine);
+        }
         setRefinedText(corrected);
         // If we are currently playing the old text, stop it
         if (isPlayingAudio && currentPlayingText === refinedText) {
@@ -568,6 +593,7 @@ const App: React.FC = () => {
         <RefinementModal
             originalText={result.originalText}
             refinedText={refinedText}
+            title={refinementType === 'scientific' ? "Scientific Enhancement (IEEE)" : "Refined Transcript"}
             onClose={() => setIsRefinementModalOpen(false)}
             onPlay={handlePlayAudio}
             onDownloadAudio={handleDownloadAudio}
@@ -808,7 +834,7 @@ const App: React.FC = () => {
             <div className="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700 h-full flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Transcript</h2>
-                <div className="flex space-x-2">
+                <div className="flex flex-wrap gap-2">
                   {/* Refine/Fix Button */}
                   {result?.originalText && (
                       <button 
@@ -818,6 +844,16 @@ const App: React.FC = () => {
                       >
                         <WandIcon className="w-3 h-3" />
                         <span>Fix Gaps</span>
+                      </button>
+                  )}
+                  {result?.originalText && (
+                      <button 
+                        onClick={handleScientificEnhance}
+                        className="text-xs flex items-center space-x-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-600/30 px-3 py-1.5 rounded-md transition-colors"
+                        title="Enhance with IEEE Citations & Links"
+                      >
+                        <AcademicIcon className="w-3 h-3" />
+                        <span>Scientific (IEEE)</span>
                       </button>
                   )}
                   {result?.originalText && (

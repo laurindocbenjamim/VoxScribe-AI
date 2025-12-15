@@ -254,3 +254,43 @@ export const refineTextWithSearch = async (text: string): Promise<string> => {
     throw new Error("Failed to refine text.");
   }
 };
+
+export const enhanceScientificText = async (text: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    const prompt = `
+      You are an expert scientific editor and researcher. Review the transcript below to create a high-quality, scientifically rigorous document.
+
+      Your Goal: Transform the raw transcript into a well-structured scientific note or article section using Markdown.
+
+      Instructions:
+      1.  **Correct & Refine**: Fix grammar, technical terms, and logical flow. Ensure the tone is academic.
+      2.  **Verify & Cite**: Identify scientific claims. Use the Google Search tool to find *real*, authoritative academic sources (journals, conference papers, reputable scientific websites) that support these claims.
+      3.  **IEEE Citation Style**: Insert numeric citations in square brackets (e.g., [1], [2]) directly into the text where the claim is made.
+      4.  **Formatting**: Use Markdown headers (##, ###) to structure the text into logical sections. Use bolding for key terms.
+      5.  **References Section**: At the very end, include a "## References" section.
+      
+      CRITICAL REFERENCE FORMATTING:
+      Each reference in the list MUST include a clickable Markdown link to the source URL found by the search tool.
+      
+      Format:
+      [1] Author(s), "[Title of Paper/Article](SOURCE_URL_FROM_TOOL)", *Journal/Source Name*, Year.
+
+      Transcript to process:
+      "${text}"
+    `;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        tools: [{googleSearch: {}}],
+      }
+    });
+    
+    return response.text?.trim() || "";
+  } catch (error) {
+    console.error("Scientific enhancement error:", error);
+    throw new Error("Failed to enhance scientific text.");
+  }
+};

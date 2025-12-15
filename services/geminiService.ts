@@ -22,56 +22,6 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-// --- WAV Encoding Helpers ---
-
-const writeString = (view: DataView, offset: number, string: string) => {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-};
-
-const encodeWAV = (samples: Float32Array, sampleRate: number): Blob => {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-
-  // RIFF identifier
-  writeString(view, 0, 'RIFF');
-  // file length
-  view.setUint32(4, 36 + samples.length * 2, true);
-  // RIFF type
-  writeString(view, 8, 'WAVE');
-  // format chunk identifier
-  writeString(view, 12, 'fmt ');
-  // format chunk length
-  view.setUint32(16, 16, true);
-  // sample format (raw)
-  view.setUint16(20, 1, true);
-  // channel count (mono)
-  view.setUint16(22, 1, true);
-  // sample rate
-  view.setUint32(24, sampleRate, true);
-  // byte rate (sampleRate * blockAlign)
-  view.setUint32(28, sampleRate * 2, true);
-  // block align (channel count * bytes per sample)
-  view.setUint16(32, 2, true);
-  // bits per sample
-  view.setUint16(34, 16, true);
-  // data chunk identifier
-  writeString(view, 36, 'data');
-  // data chunk length
-  view.setUint32(40, samples.length * 2, true);
-
-  // write the PCM samples
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    offset += 2;
-  }
-
-  return new Blob([view], { type: 'audio/wav' });
-};
-
 // --- Audio Processing Logic ---
 
 /**
@@ -107,46 +57,66 @@ export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promis
 };
 
 /**
- * Handling for large files: Decodes, Resamples to 16kHz Mono, splits into chunks, and transcribes sequentially.
+ * Handling for large files: Uses Gemini File API to upload and process files > 20MB or long duration.
+ * This prevents browser crashes caused by decoding large AudioBuffers in memory.
  */
 export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
+  const ai = getAiClient();
+
+  // If file is reasonably small (under 20MB), use the faster inline method
+  if (file.size < 20 * 1024 * 1024) {
+      return transcribeAudio(file, file.type || 'audio/mp3');
+  }
+
   try {
-    // 1. Decode Audio (using browser native API to get raw PCM)
-    // We force a 16kHz context to downsample high-res audio and save space
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-    const arrayBuffer = await file.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    
-    // 2. Configure Chunking
-    // 5 minutes per chunk @ 16kHz 16-bit mono = ~9.6 MB raw PCM -> ~13 MB Base64.
-    // This fits safely within the ~20MB inline data limit.
-    const CHUNK_DURATION_SEC = 300; 
-    const totalDuration = audioBuffer.duration;
-    const totalChannels = audioBuffer.numberOfChannels;
-    const pcmData = audioBuffer.getChannelData(0); // Use first channel (mono mixdown effectively if we just take one, or average them)
-    
-    let fullTranscript = "";
-    
-    // 3. Process Chunks
-    for (let startTime = 0; startTime < totalDuration; startTime += CHUNK_DURATION_SEC) {
-      const endTime = Math.min(startTime + CHUNK_DURATION_SEC, totalDuration);
-      const startSample = Math.floor(startTime * SAMPLE_RATE);
-      const endSample = Math.floor(endTime * SAMPLE_RATE);
-      
-      const chunkSamples = pcmData.slice(startSample, endSample);
-      const wavBlob = encodeWAV(chunkSamples, SAMPLE_RATE);
-      
-      // Transcribe this chunk
-      const chunkTranscript = await transcribeAudio(wavBlob, 'audio/wav');
-      fullTranscript += " " + chunkTranscript;
+    // 1. Upload to Gemini File API
+    // The SDK handles the upload of the Blob directly
+    const uploadResponse = await ai.files.upload({
+      file: file,
+      config: { 
+          displayName: `Audio Upload ${new Date().toISOString()}`,
+          mimeType: file.type || 'audio/mp3'
+      }
+    });
+
+    const fileUri = uploadResponse.file.uri;
+    const fileName = uploadResponse.file.name;
+
+    // 2. Poll for processing completion
+    // Large files take a moment to change state from PROCESSING to ACTIVE
+    let fileState = uploadResponse.file.state;
+    while (fileState === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      const getResponse = await ai.files.get({ name: fileName });
+      fileState = getResponse.file.state;
+      if (fileState === 'FAILED') {
+        throw new Error("Audio processing failed on the server.");
+      }
     }
+
+    // 3. Generate Transcription using the file URI
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL_TRANSCRIPTION,
+      contents: {
+        parts: [
+          { 
+            fileData: { 
+              fileUri: fileUri, 
+              mimeType: uploadResponse.file.mimeType 
+            } 
+          },
+          { 
+            text: "Please transcribe this audio exactly as spoken. Return ONLY the transcript text. Do not add any introduction, timestamps, or markdown formatting." 
+          }
+        ]
+      }
+    });
     
-    audioContext.close();
-    return fullTranscript.trim();
+    return response.text?.trim() || "";
 
   } catch (error) {
-    console.error("Large file processing error:", error);
-    throw new Error("Failed to process large audio file. It might be corrupt or too complex to decode.");
+    console.error("Large file transcription error:", error);
+    throw new Error("Failed to process large audio file. Please try a smaller file or ensure your internet connection is stable.");
   }
 };
 
@@ -163,6 +133,40 @@ export const translateText = async (text: string, targetLanguage: string): Promi
     console.error("Translation error:", error);
     throw new Error("Failed to translate text.");
   }
+};
+
+/**
+ * Translates long text by chunking it to avoid token limits.
+ */
+export const translateLongText = async (text: string, targetLanguage: string): Promise<string> => {
+  // Rough chunk size (characters) to stay safely within output limits
+  const CHUNK_SIZE = 8000; 
+  if (text.length <= CHUNK_SIZE) {
+    return translateText(text, targetLanguage);
+  }
+
+  // Split by logical paragraphs to avoid cutting sentences
+  const paragraphs = text.split('\n\n');
+  const chunks: string[] = [];
+  let currentChunk = "";
+
+  for (const para of paragraphs) {
+    if ((currentChunk.length + para.length) > CHUNK_SIZE && currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = "";
+    }
+    currentChunk += (currentChunk ? "\n\n" : "") + para;
+  }
+  if (currentChunk) chunks.push(currentChunk);
+
+  // Translate chunks sequentially
+  let fullTranslation = "";
+  for (const chunk of chunks) {
+    const translatedChunk = await translateText(chunk, targetLanguage);
+    fullTranslation += (fullTranslation ? "\n\n" : "") + translatedChunk;
+  }
+
+  return fullTranslation;
 };
 
 export const generateSpeech = async (text: string, voiceName: string = 'Kore'): Promise<string> => {

@@ -261,20 +261,22 @@ export const enhanceScientificText = async (text: string): Promise<string> => {
     const prompt = `
       You are an expert scientific editor and researcher. Review the transcript below to create a high-quality, scientifically rigorous document.
 
-      Your Goal: Transform the raw transcript into a well-structured scientific note or article section using Markdown.
+      Your Tasks:
+      1.  **Scientific Accuracy & Correction**: Heavily scrutinize the text for scientific errors, incorrect definitions, or fallacious arguments. 
+          - If a definition is wrong, FIX IT with the correct scientific definition.
+          - If an argument is flawed, correct the logic.
+          - If technical terms are misheard, replace them with the correct terminology.
+      2.  **Deep Search**: Use the Google Search tool to verify complex claims, data, or definitions. Ensure the information is up-to-date and accurate.
+      3.  **IEEE Citations**: If (and ONLY if) you find it necessary to use external information from search results to support a corrected claim, definition, or specific fact, insert an IEEE citation [x] in the text.
+      4.  **Formatting**: Output a clean, well-structured scientific document using Markdown headers (##, ###). Use bolding for key terms.
+      
+      REQUIRED SECTIONS AT THE END:
+      
+      ## Errata & Corrections
+      (You MUST include this section. List the specific scientific errors found in the original transcript and how you fixed them. Be specific. e.g., "Corrected the definition of 'entropy' which was described as energy, to 'a measure of disorder'.")
 
-      Instructions:
-      1.  **Correct & Refine**: Fix grammar, technical terms, and logical flow. Ensure the tone is academic.
-      2.  **Verify & Cite**: Identify scientific claims. Use the Google Search tool to find *real*, authoritative academic sources (journals, conference papers, reputable scientific websites) that support these claims.
-      3.  **IEEE Citation Style**: Insert numeric citations in square brackets (e.g., [1], [2]) directly into the text where the claim is made.
-      4.  **Formatting**: Use Markdown headers (##, ###) to structure the text into logical sections. Use bolding for key terms.
-      5.  **References Section**: At the very end, include a "## References" section.
-      
-      CRITICAL REFERENCE FORMATTING:
-      Each reference in the list MUST include a clickable Markdown link to the source URL found by the search tool.
-      
-      Format:
-      [1] Author(s), "[Title of Paper/Article](SOURCE_URL_FROM_TOOL)", *Journal/Source Name*, Year.
+      ## References
+      (Include this section ONLY if you used citations in the text. List them in IEEE format with clickable Markdown links: [1] Author, "[Title](URL)", Source, Year.)
 
       Transcript to process:
       "${text}"

@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
+import { GoogleIcon, FacebookIcon } from './Icons';
 
 interface AuthModalProps {
   onLogin: () => void;
   onSignup: () => void;
+  onSocialLogin: (provider: 'google' | 'facebook') => void;
 }
 
-const AuthModal: React.FC<AuthModalProps> = ({ onLogin, onSignup }) => {
+const AuthModal: React.FC<AuthModalProps> = ({ onLogin, onSignup, onSocialLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -73,6 +75,32 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLogin, onSignup }) => {
             )}
           </button>
         </form>
+        
+        <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-700"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-slate-900 text-slate-500">Or continue with</span>
+            </div>
+        </div>
+        
+        <div className="grid grid-cols-2 gap-3">
+            <button 
+                onClick={() => onSocialLogin('google')}
+                className="flex items-center justify-center space-x-2 py-2.5 border border-slate-600 rounded-lg hover:bg-slate-800 transition-colors bg-white text-slate-900"
+            >
+                <GoogleIcon className="w-5 h-5" />
+                <span className="font-medium text-sm">Google</span>
+            </button>
+            <button 
+                onClick={() => onSocialLogin('facebook')}
+                className="flex items-center justify-center space-x-2 py-2.5 border border-slate-600 rounded-lg hover:bg-[#1877F2]/90 transition-colors bg-[#1877F2] text-white"
+            >
+                <FacebookIcon className="w-5 h-5 text-white" />
+                <span className="font-medium text-sm">Facebook</span>
+            </button>
+        </div>
 
         <div className="mt-6 text-center text-sm text-slate-400">
           {isLogin ? "Don't have an account? " : "Already have an account? "}

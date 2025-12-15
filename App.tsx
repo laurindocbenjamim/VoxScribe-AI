@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { transcribeAudio, transcribeLargeAudio, translateText, generateSpeech, generateMindMap, refineTextWithSearch, enhanceScientificText } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
-import { getCurrentUser, login, signup, logout } from './services/authService';
+import { getCurrentUser, login, signup, logout, loginWithProvider } from './services/authService';
 import { AppStatus, ProcessingState, TranscriptionResult, AudioMetadata, LanguageOption, SubscriptionState, PlanTier, User } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
 import { MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, CheckIcon, ShareIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, WandIcon, AcademicIcon } from './components/Icons';
@@ -98,6 +98,18 @@ const App: React.FC = () => {
         setShowOnboardingPlans(true);
     } catch (e) {
         showToast("Signup failed");
+    }
+  };
+
+  const handleSocialLogin = async (provider: 'google' | 'facebook') => {
+    try {
+        const u = await loginWithProvider(provider);
+        setUser(u);
+        setShowAuth(false);
+        // Show plans immediately after signup/login first time
+        setShowOnboardingPlans(true);
+    } catch (e) {
+        showToast(`Failed to login with ${provider}`);
     }
   };
 
@@ -625,6 +637,7 @@ const App: React.FC = () => {
          <AuthModal 
             onLogin={() => handleLogin('demo@example.com', 'password')} // Mock
             onSignup={() => handleSignup('demo@example.com', 'password')} // Mock
+            onSocialLogin={handleSocialLogin}
          />
       )}
 

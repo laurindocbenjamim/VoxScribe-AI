@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon, EyeIcon, EyeOffIcon, RefreshIcon } from './Icons';
+import { SpeakerIcon, DownloadIcon, CopyIcon, MapIcon, EyeIcon, EyeOffIcon, RefreshIcon, PdfIcon } from './Icons';
 import * as docx from "docx";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
 
 interface RefinementModalProps {
   originalText: string;
@@ -80,6 +82,35 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
   const execCmd = (command: string, value: string | undefined = undefined) => {
     document.execCommand(command, false, value);
     if (editorRef.current) editorRef.current.focus();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!editorRef.current) return;
+    
+    // Use jsPDF html method which relies on html2canvas
+    const doc = new jsPDF({
+        orientation: 'p',
+        unit: 'pt',
+        format: 'letter'
+    });
+
+    // Provide html2canvas explicitly to window for jspdf to find if module loading is quirky, 
+    // though usually ESM imports work fine if passed in options or globally available.
+    // ESM build of jspdf typically includes the html method but needs html2canvas dependency.
+    
+    // We will use the callback approach.
+    const margin = 36; // 0.5 inch
+    
+    // Note: The 'html' method is async.
+    await doc.html(editorRef.current, {
+        callback: function(doc) {
+            doc.save('Scientific_IEEE_Report.pdf');
+        },
+        x: margin,
+        y: margin,
+        width: 612 - (margin * 2), // Letter width minus margins
+        windowWidth: 816 // Scale down from screen pixels to points approx
+    });
   };
 
   const handleDownloadDocx = async () => {
@@ -297,6 +328,14 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
                     <span>IEEE Standard</span>
                 </div>
                 <div className="flex items-center gap-3">
+                    <button
+                        onClick={handleDownloadPdf}
+                        className="flex items-center space-x-2 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium transition-all text-sm"
+                    >
+                        <PdfIcon className="w-4 h-4" />
+                        <span>Download PDF</span>
+                    </button>
+                    
                      <button
                         onClick={handleDownloadDocx}
                         className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-all text-sm"

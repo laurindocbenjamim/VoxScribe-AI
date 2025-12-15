@@ -22,6 +22,19 @@ export const login = async (email: string, password: string): Promise<User> => {
   return user;
 };
 
+export const loginWithProvider = async (provider: 'google' | 'facebook'): Promise<User> => {
+  // Mock Social Login
+  const user: User = {
+    id: `user-${provider}-` + Date.now(),
+    email: `user@${provider}.com`,
+    name: `${provider.charAt(0).toUpperCase() + provider.slice(1)} User`,
+    isLoggedIn: true
+  };
+  
+  localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+  return user;
+};
+
 export const signup = async (email: string, password: string): Promise<User> => {
   // Mock signup - same as login for prototype
   return login(email, password);

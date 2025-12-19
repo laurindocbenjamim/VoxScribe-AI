@@ -1,3 +1,4 @@
+
 export enum AppStatus {
   IDLE = 'IDLE',
   RECORDING = 'RECORDING',
@@ -8,15 +9,25 @@ export enum AppStatus {
   ERROR = 'ERROR'
 }
 
+export type AppView = 'dashboard' | 'notebook';
+
+export interface Note {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ProcessingState {
   status: AppStatus;
   error?: string;
-  progress?: number; // 0-100 placeholder for UX
+  progress?: number; 
 }
 
 export interface TranscriptionResult {
   originalText: string;
-  detectedLanguage?: string; // Gemini might provide this if asked, or we assume auto
+  detectedLanguage?: string;
   translatedText?: string;
   targetLanguage?: string;
 }

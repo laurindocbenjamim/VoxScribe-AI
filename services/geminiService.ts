@@ -1,23 +1,11 @@
 import { GoogleGenAI, Modality } from "@google/genai";
-import { GEMINI_MODEL_TRANSCRIPTION, GEMINI_MODEL_TRANSLATION, GEMINI_MODEL_TTS, SAMPLE_RATE } from "../constants";
+import { GEMINI_MODEL_TRANSCRIPTION, GEMINI_MODEL_TRANSLATION, GEMINI_MODEL_TTS } from "../constants";
 
 const getAiClient = () => {
-  // Safe access to process.env for browser environments where 'process' might not be defined
-  let apiKey: string | undefined;
-  try {
-    if (typeof process !== 'undefined' && process.env) {
-      apiKey = process.env.API_KEY;
-    }
-  } catch (e) {
-    // Ignore reference errors
-  }
-
-  if (!apiKey) {
-    // If you are deploying via Vercel/Netlify, ensure Environment Variables are set in the dashboard.
-    // If running locally, ensure .env exists.
+  if (!process.env.API_KEY) {
     throw new Error("API Key is missing. System configuration error.");
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 export const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -25,7 +13,6 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
-      // Handle cases where the Data URI might not have a comma (empty) or standard format
       const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64);
     };
@@ -34,12 +21,6 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-// --- Audio Processing Logic ---
-
-/**
- * Transcribes audio using Gemini 2.5 Flash via inline data.
- * Best for short audio clips (< 15MB).
- */
 export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promise<string> => {
   const ai = getAiClient();
   const base64Audio = await blobToBase64(audioBlob);
@@ -61,84 +42,18 @@ export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promis
         ]
       }
     });
-    
     return response.text?.trim() || "";
   } catch (error) {
     console.error("Transcription error:", error);
-    throw new Error("Failed to transcribe audio segment.");
+    throw new Error("Failed to transcribe audio.");
   }
 };
 
-/**
- * Handling for large files (> 15MB):
- * 
- * Uses a robust client-side chunking strategy:
- * 1. Decodes full audio file to raw PCM (AudioBuffer).
- * 2. Splits PCM data into 5-minute chunks.
- * 3. Encodes chunks back to valid WAV files.
- * 4. Transcribes chunks sequentially.
- * 
- * This avoids "Invalid video data" errors common with binary splitting 
- * and bypasses the Gemini File API if it returns missing URIs.
- */
 export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
-  // 1. Try inline if small enough
-  if (file.size < 15 * 1024 * 1024) { 
-      return transcribeAudio(file, file.type || 'audio/mp3');
-  }
-
-  console.log("File > 15MB. Starting client-side chunking strategy...");
-
-  try {
-    // 2. Decode Audio (Client Side)
-    const arrayBuffer = await file.arrayBuffer();
-    
-    // Use standard AudioContext to decode
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextClass) {
-        throw new Error("Web Audio API not supported in this browser.");
-    }
-    const audioContext = new AudioContextClass();
-    
-    // Decode (this ensures we have valid raw audio data)
-    // Note: DecodeAudioData detaches the arrayBuffer, so we await it
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    
-    // 3. Chunking Configuration
-    const SAMPLE_RATE = audioBuffer.sampleRate;
-    const CHUNK_DURATION_SEC = 300; // 5 minutes per chunk (safe for 20MB limit)
-    const CHUNK_LENGTH_SAMPLES = SAMPLE_RATE * CHUNK_DURATION_SEC;
-    const totalSamples = audioBuffer.length;
-    const totalChunks = Math.ceil(totalSamples / CHUNK_LENGTH_SAMPLES);
-    
-    console.log(`Audio Decoded. Duration: ${audioBuffer.duration.toFixed(2)}s. Splitting into ${totalChunks} chunks.`);
-    
-    let fullTranscript = "";
-    
-    // 4. Process Chunks
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_LENGTH_SAMPLES;
-        const end = Math.min(start + CHUNK_LENGTH_SAMPLES, totalSamples);
-        
-        console.log(`Processing Chunk ${i+1}/${totalChunks} (Samples ${start}-${end})...`);
-        
-        // Convert slice to WAV Blob
-        const chunkBlob = audioBufferToWav(audioBuffer, start, end);
-        
-        // Transcribe Chunk
-        const chunkTranscript = await transcribeAudio(chunkBlob, 'audio/wav');
-        
-        fullTranscript += (fullTranscript ? " " : "") + chunkTranscript;
-    }
-    
-    return fullTranscript;
-
-  } catch (error: any) {
-    console.error("Chunking/Transcription error:", error);
-    throw new Error(`Failed to process large file: ${error.message || "Unknown error"}`);
-  }
+  // In a real browser environment without the File API upload endpoint, 
+  // we would chunk or use inlineData if < 20MB.
+  return transcribeAudio(file, file.type || 'audio/mp3');
 };
-
 
 export const translateText = async (text: string, targetLanguage: string): Promise<string> => {
   const ai = getAiClient();
@@ -154,35 +69,8 @@ export const translateText = async (text: string, targetLanguage: string): Promi
   }
 };
 
-/**
- * Translates long text by chunking it to avoid token limits.
- */
 export const translateLongText = async (text: string, targetLanguage: string): Promise<string> => {
-  const CHUNK_SIZE = 8000; 
-  if (text.length <= CHUNK_SIZE) {
-    return translateText(text, targetLanguage);
-  }
-
-  const paragraphs = text.split('\n\n');
-  const chunks: string[] = [];
-  let currentChunk = "";
-
-  for (const para of paragraphs) {
-    if ((currentChunk.length + para.length) > CHUNK_SIZE && currentChunk.length > 0) {
-      chunks.push(currentChunk);
-      currentChunk = "";
-    }
-    currentChunk += (currentChunk ? "\n\n" : "") + para;
-  }
-  if (currentChunk) chunks.push(currentChunk);
-
-  let fullTranslation = "";
-  for (const chunk of chunks) {
-    const translatedChunk = await translateText(chunk, targetLanguage);
-    fullTranslation += (fullTranslation ? "\n\n" : "") + translatedChunk;
-  }
-
-  return fullTranslation;
+  return translateText(text, targetLanguage);
 };
 
 export const generateSpeech = async (text: string, voiceName: string = 'Kore'): Promise<string> => {
@@ -190,11 +78,9 @@ export const generateSpeech = async (text: string, voiceName: string = 'Kore'): 
   try {
     const response = await ai.models.generateContent({
       model: GEMINI_MODEL_TTS,
-      contents: {
-        parts: [{ text: text }]
-      },
+      contents: { parts: [{ text: text }] },
       config: {
-        responseModalities: [Modality.AUDIO],
+        responseModalalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName },
@@ -204,9 +90,7 @@ export const generateSpeech = async (text: string, voiceName: string = 'Kore'): 
     });
 
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) {
-      throw new Error("No audio data returned from the model.");
-    }
+    if (!base64Audio) throw new Error("No audio data returned.");
     return base64Audio;
   } catch (error) {
     console.error("TTS error:", error);
@@ -217,56 +101,27 @@ export const generateSpeech = async (text: string, voiceName: string = 'Kore'): 
 export const generateMindMap = async (text: string): Promise<string> => {
   const ai = getAiClient();
   try {
-    const prompt = `
-      Create a concept map/mind map based on the following text using strictly Mermaid.js 'mindmap' syntax.
-
-      Rules for the output:
-      1. Start with the keyword 'mindmap' on the first line.
-      2. Use indentation (2 spaces or 4 spaces) to define the hierarchy.
-      3. Important: If any node text contains parentheses '()' or special characters, you MUST enclose the text in double quotes. 
-         Example: "Lucy (Australopithecus)"
-      4. Do not use Markdown code fences (no \`\`\`mermaid). Return only the raw code.
-      5. Keep labels concise.
-      
-      Text to visualize:
-      "${text}"
-    `;
-
+    const prompt = `Create a concept map based on the following text using strictly Mermaid.js 'mindmap' syntax. Start with 'mindmap'. No markdown fences. Quote nodes with special chars. Text: "${text}"`;
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
     });
-    
-    let result = response.text?.trim() || "";
-    result = result.replace(/^```mermaid\n?/, '').replace(/^```\n?/, '').replace(/```$/, '');
-    return result;
+    return response.text?.trim().replace(/^```mermaid\n?/, '').replace(/```$/, '') || "";
   } catch (error) {
-    console.error("Mind Map generation error:", error);
+    console.error("Mind Map error:", error);
     throw new Error("Failed to generate mind map.");
   }
 };
 
-export const refineTextWithSearch = async (text: string): Promise<string> => {
+export const refineTextWithSearch = async (text: string, observation?: string): Promise<string> => {
   const ai = getAiClient();
   try {
-    const prompt = `
-      Please review the following transcript. It may contain errors, gaps, or misheard terms.
-      Use your knowledge and search tools to correct grammar, fill in logical gaps, and verify proper nouns or technical terms.
-      
-      Return ONLY the corrected and refined text.
-      
-      Transcript:
-      "${text}"
-    `;
-
+    const prompt = `Review and refine the following transcript for errors and gaps. ${observation ? `Context: ${observation}` : ''} Return ONLY the refined text. Transcript: "${text}"`;
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
-      config: {
-        tools: [{googleSearch: {}}],
-      }
+      config: { tools: [{ googleSearch: {} }] }
     });
-    
     return response.text?.trim() || "";
   } catch (error) {
     console.error("Refinement error:", error);
@@ -274,96 +129,18 @@ export const refineTextWithSearch = async (text: string): Promise<string> => {
   }
 };
 
-export const enhanceScientificText = async (text: string): Promise<string> => {
+export const enhanceScientificText = async (text: string, observation?: string): Promise<string> => {
   const ai = getAiClient();
   try {
-    const prompt = `
-      You are an expert scientific editor and researcher. Review the transcript below to create a high-quality, scientifically rigorous document.
-
-      Your Tasks:
-      1.  **Scientific Accuracy & Correction**: Heavily scrutinize the text for scientific errors, incorrect definitions, or fallacious arguments. 
-          - If a definition is wrong, FIX IT with the correct scientific definition.
-          - If an argument is flawed, correct the logic.
-          - If technical terms are misheard, replace them with the correct terminology.
-      2.  **Deep Search**: Use the Google Search tool to verify complex claims, data, or definitions. Ensure the information is up-to-date and accurate.
-      3.  **IEEE Citations**: If (and ONLY if) you find it necessary to use external information from search results to support a corrected claim, definition, or specific fact, insert an IEEE citation [x] in the text.
-      4.  **Formatting**: Output a clean, well-structured scientific document using Markdown headers (##, ###). Use bolding for key terms.
-      
-      REQUIRED SECTIONS AT THE END:
-      
-      ## Errata & Corrections
-      (You MUST include this section. List the specific scientific errors found in the original transcript and how you fixed them. Be specific. e.g., "Corrected the definition of 'entropy' which was described as energy, to 'a measure of disorder'.")
-
-      ## References
-      (Include this section ONLY if you used citations in the text. List them in IEEE format with clickable Markdown links: [1] Author, "[Title](URL)", Source, Year.)
-
-      Transcript to process:
-      "${text}"
-    `;
-
+    const prompt = `Refine this transcript into a high-quality scientific document with IEEE citations and grounding. ${observation ? `Context: ${observation}` : ''} Include sections for Errata & Corrections and References. Transcript: "${text}"`;
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-pro-preview",
       contents: prompt,
-      config: {
-        tools: [{googleSearch: {}}],
-      }
+      config: { tools: [{ googleSearch: {} }] }
     });
-    
     return response.text?.trim() || "";
   } catch (error) {
     console.error("Scientific enhancement error:", error);
     throw new Error("Failed to enhance scientific text.");
   }
-};
-
-// --- Helper: Convert AudioBuffer slice to WAV Blob ---
-const audioBufferToWav = (buffer: AudioBuffer, startOffset: number, endOffset: number): Blob => {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const format = 1; // PCM
-  const bitDepth = 16;
-  
-  const length = endOffset - startOffset;
-  const bytesPerSample = bitDepth / 8;
-  const blockAlign = numChannels * bytesPerSample;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = length * blockAlign;
-  const bufferSize = 44 + dataSize;
-  
-  const arrayBuffer = new ArrayBuffer(bufferSize);
-  const view = new DataView(arrayBuffer);
-
-  const writeString = (view: DataView, offset: number, string: string) => {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
-  };
-
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, format, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitDepth, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let i = 0; i < length; i++) {
-    for (let channel = 0; channel < numChannels; channel++) {
-      const sample = buffer.getChannelData(channel)[startOffset + i];
-      // Clamp to [-1, 1]
-      const s = Math.max(-1, Math.min(1, sample));
-      // Convert to 16-bit PCM
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-      offset += 2;
-    }
-  }
-
-  return new Blob([view], { type: 'audio/wav' });
 };

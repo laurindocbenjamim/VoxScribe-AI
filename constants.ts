@@ -1,7 +1,8 @@
 import { LanguageOption } from './types';
 
-export const GEMINI_MODEL_TRANSCRIPTION = 'gemini-2.5-flash'; // High speed for audio
-export const GEMINI_MODEL_TRANSLATION = 'gemini-2.5-flash';
+// Updated models to use Gemini 3 series for better performance and compliance with guidelines
+export const GEMINI_MODEL_TRANSCRIPTION = 'gemini-3-flash-preview'; 
+export const GEMINI_MODEL_TRANSLATION = 'gemini-3-flash-preview';
 export const GEMINI_MODEL_TTS = 'gemini-2.5-flash-preview-tts';
 
 export const TARGET_LANGUAGES: LanguageOption[] = [

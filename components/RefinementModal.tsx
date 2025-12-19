@@ -39,7 +39,6 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
   const [showOriginal, setShowOriginal] = useState(true);
   const editorRef = useRef<HTMLDivElement>(null);
   const [foreColor, setForeColor] = useState("#000000");
-  const [hiliteColor, setHiliteColor] = useState("#ffffff");
 
   useEffect(() => {
     if (editorRef.current && refinedText) {
@@ -73,8 +72,9 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
     if (!editorRef.current) return;
     const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'letter' });
     const margin = 36;
+    const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
     await doc.html(editorRef.current, {
-        callback: (doc) => doc.save('Scientific_IEEE_Report.pdf'),
+        callback: (doc) => doc.save(`VoxScribe_${safeTitle}_Refined.pdf`),
         x: margin,
         y: margin,
         width: 612 - (margin * 2),
@@ -84,6 +84,7 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
 
   const handleDownloadDocx = async () => {
     if (!editorRef.current) return;
+    const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const children = Array.from(editorRef.current.childNodes) as ChildNode[];
     const docChildren: (docx.Paragraph | docx.Table)[] = [];
 
@@ -128,7 +129,7 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = "Scientific_Report.docx";
+    a.download = `VoxScribe_${safeTitle}_Refined.docx`;
     a.click();
     window.URL.revokeObjectURL(url);
   };
@@ -144,13 +145,13 @@ const RefinementModal: React.FC<RefinementModalProps> = ({
       <div className="bg-slate-900 rounded-2xl w-full max-w-6xl max-h-[95vh] flex flex-col border border-slate-700 shadow-2xl transition-all duration-300">
         
         <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-900 rounded-t-2xl shrink-0">
-          <div>
-            <h2 className="text-xl font-bold text-white flex items-center">
-                {title}
-                <span className="ml-3 px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-xs border border-blue-500/50">AI Enhanced</span>
+          <div className="flex-1 truncate mr-4">
+            <h2 className="text-xl font-bold text-white flex items-center truncate">
+                <span className="truncate">{title}</span>
+                <span className="ml-3 shrink-0 px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-xs border border-blue-500/50">AI Enhanced</span>
             </h2>
           </div>
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2 shrink-0">
              <button onClick={handleMigrate} className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border border-blue-500/50">
                 <SparklesIcon className="w-4 h-4" />
                 <span>Send to Notebook</span>

@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import { GEMINI_MODEL_TRANSCRIPTION, GEMINI_MODEL_TRANSLATION, GEMINI_MODEL_TTS } from "../constants";
 
@@ -19,6 +20,20 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+};
+
+export const extractTitle = async (text: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Read the following text and suggest a very short, professional title (max 5 words). Return ONLY the title text:\n\n${text.substring(0, 2000)}`,
+    });
+    return response.text?.trim().replace(/^"|"$/g, '') || "Untitled Transcript";
+  } catch (error) {
+    console.error("Title extraction error:", error);
+    return "Untitled Transcript";
+  }
 };
 
 export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promise<string> => {
@@ -50,8 +65,6 @@ export const transcribeAudio = async (audioBlob: Blob, mimeType: string): Promis
 };
 
 export const transcribeLargeAudio = async (file: Blob): Promise<string> => {
-  // In a real browser environment without the File API upload endpoint, 
-  // we would chunk or use inlineData if < 20MB.
   return transcribeAudio(file, file.type || 'audio/mp3');
 };
 

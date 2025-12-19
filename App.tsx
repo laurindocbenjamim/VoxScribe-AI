@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   transcribeAudio, 
@@ -6,11 +7,12 @@ import {
   generateSpeech, 
   generateMindMap, 
   refineTextWithSearch, 
-  enhanceScientificText 
+  enhanceScientificText,
+  extractTitle
 } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
 import { getCurrentUser, login, signup, logout, loginWithProvider } from './services/authService';
-import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note } from './types';
+import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note, HistoryItem } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
 import { 
   MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, 
@@ -24,6 +26,7 @@ import RefinementModal from './components/RefinementModal';
 import RefinementInputModal from './components/RefinementInputModal';
 import AuthModal from './components/AuthModal';
 import Notebook from './components/Notebook';
+import HistoryModal from './components/HistoryModal';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -55,6 +58,13 @@ const App: React.FC = () => {
   const [refinementType, setRefinementType] = useState<'standard' | 'scientific'>('standard');
   const [showRefinementInput, setShowRefinementInput] = useState(false);
   
+  // History State
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
+    const saved = localStorage.getItem('voxscribe_history');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+
   // Notebook State
   const [notes, setNotes] = useState<Note[]>(() => {
     const saved = localStorage.getItem('voxscribe_notes');
@@ -65,6 +75,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('voxscribe_notes', JSON.stringify(notes));
   }, [notes]);
+
+  useEffect(() => {
+    localStorage.setItem('voxscribe_history', JSON.stringify(history));
+  }, [history]);
 
   // Subscription State
   const [subscription, setSubscription] = useState<SubscriptionState>(getSubscription());
@@ -290,21 +304,40 @@ const App: React.FC = () => {
     setVisualizedText(null);
     setRefinedText(null);
     try {
-      let transcript = await transcribeLargeAudio(audioData.blob);
+      const transcript = await transcribeLargeAudio(audioData.blob);
+      const deducedTitle = await extractTitle(transcript);
+      
       const newSubState = addUsageMinutes(estimatedDuration);
       setSubscription(newSubState);
-      const intermediateResult: TranscriptionResult = { originalText: transcript };
+      
+      const intermediateResult: TranscriptionResult = { title: deducedTitle, originalText: transcript };
       setResult(intermediateResult);
+      
       setStatus(AppStatus.TRANSLATING);
+      let translated = "";
       if (transcript) {
         if (targetLang !== 'en' && !subscription.canTranslate) {
-            setResult({ ...intermediateResult, translatedText: "Upgrade to Advanced Plan to unlock translation.", targetLanguage: targetLang });
+            translated = "Upgrade to Advanced Plan to unlock translation.";
         } else {
             const selectedLangName = TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
-            const translation = await translateLongText(transcript, selectedLangName);
-            setResult({ ...intermediateResult, translatedText: translation, targetLanguage: targetLang });
+            translated = await translateLongText(transcript, selectedLangName);
         }
       }
+      
+      const finalResult = { ...intermediateResult, translatedText: translated, targetLanguage: targetLang };
+      setResult(finalResult);
+      
+      // Save to History
+      const historyItem: HistoryItem = {
+        id: Date.now().toString(),
+        timestamp: Date.now(),
+        title: deducedTitle,
+        originalText: transcript,
+        translatedText: translated,
+        audioName: audioData.name
+      };
+      setHistory(prev => [historyItem, ...prev]);
+      
       setStatus(AppStatus.COMPLETED);
     } catch (err: any) {
       console.error(err);
@@ -316,12 +349,12 @@ const App: React.FC = () => {
   const handleExportReport = () => {
     if (!result) return;
     const timestamp = new Date().toLocaleString();
-    const content = `VOXSCRIBE AI - TRANSCRIPTION REPORT\nDate: ${timestamp}\nFile: ${audioData?.name || 'Recording'}\nDuration: ${audioData?.duration ? formatTime(audioData.duration) : 'Unknown'}\nTarget Language: ${TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang}\n\n---------------------------------------------------\nORIGINAL TRANSCRIPT\n---------------------------------------------------\n${result.originalText || "(No transcript available)"}\n\n---------------------------------------------------\nTRANSLATION (${targetLang.toUpperCase()})\n---------------------------------------------------\n${result.translatedText || "(No translation available)"}\n\n---------------------------------------------------\nGenerated by VoxScribe AI\n`;
+    const content = `VOXSCRIBE AI - TRANSCRIPTION REPORT\nTitle: ${result.title}\nDate: ${timestamp}\nFile: ${audioData?.name || 'Recording'}\nDuration: ${audioData?.duration ? formatTime(audioData.duration) : 'Unknown'}\n\n---------------------------------------------------\nORIGINAL TRANSCRIPT\n---------------------------------------------------\n${result.originalText || "(No transcript available)"}\n\n---------------------------------------------------\nTRANSLATION (${targetLang.toUpperCase()})\n---------------------------------------------------\n${result.translatedText || "(No translation available)"}\n\n---------------------------------------------------\nGenerated by VoxScribe AI\n`;
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `VoxScribe_Report_${new Date().toISOString().slice(0,10)}.txt`;
+    a.download = `${result.title.replace(/\s+/g, '_')}_Report.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -363,6 +396,14 @@ const App: React.FC = () => {
         setRefinedText(corrected);
         setStatus(AppStatus.COMPLETED);
         setIsRefinementModalOpen(true);
+        
+        // Update history item with refinement if possible
+        if (history.length > 0) {
+            const lastItem = history[0];
+            const updatedHistory = [...history];
+            updatedHistory[0] = { ...lastItem, refinedText: corrected };
+            setHistory(updatedHistory);
+        }
     } catch (err: any) {
         setError("Failed to refine text. Please try again.");
         setStatus(AppStatus.COMPLETED);
@@ -546,6 +587,7 @@ const App: React.FC = () => {
     setActiveNoteId(newNote.id);
     setCurrentView('notebook');
     setIsRefinementModalOpen(false);
+    setShowHistoryModal(false);
     showToast("Successfully migrated to Notebook!");
   };
 
@@ -604,6 +646,15 @@ const App: React.FC = () => {
             isGeneratingAudio={isGeneratingAudio && currentPlayingText === refinedText}
         />
       )}
+      {showHistoryModal && (
+        <HistoryModal 
+          history={history} 
+          onClose={() => setShowHistoryModal(false)}
+          onMigrateToNotebook={handleMigrateToNotebook}
+          onCopy={handleCopy}
+          onClearHistory={() => setHistory([])}
+        />
+      )}
 
       <div className="max-w-6xl mx-auto space-y-8">
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6 space-y-4 md:space-y-0">
@@ -628,6 +679,12 @@ const App: React.FC = () => {
                   className={`text-sm font-medium transition-colors ${currentView === 'notebook' ? 'text-blue-400 border-b-2 border-blue-400 pb-1' : 'text-slate-500 hover:text-slate-300'}`}
                >
                   Notebook
+               </button>
+               <button 
+                  onClick={() => setShowHistoryModal(true)}
+                  className={`text-sm font-medium transition-colors text-slate-500 hover:text-slate-300`}
+               >
+                  History
                </button>
             </div>
           </div>
@@ -694,7 +751,7 @@ const App: React.FC = () => {
                 <section className="lg:col-span-7 space-y-6">
                   <div className="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700 h-full flex flex-col">
                     <div className="flex items-center justify-between mb-4">
-                      <h2 className="text-xl font-semibold text-white">Transcript</h2>
+                      <h2 className="text-xl font-semibold text-white truncate max-w-[50%]">{result?.title || 'Transcript'}</h2>
                       <div className="flex flex-wrap gap-2">
                         {result?.originalText && <button onClick={handleRefineClick} className="text-xs bg-teal-600/20 hover:bg-teal-600/40 text-teal-400 border border-teal-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1"><WandIcon className="w-3 h-3" /><span>Fix Gaps</span></button>}
                         {result?.originalText && <button onClick={handleScientificClick} className="text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1"><AcademicIcon className="w-3 h-3" /><span>Refine Content</span></button>}

@@ -9,7 +9,7 @@ export enum AppStatus {
   ERROR = 'ERROR'
 }
 
-export type AppView = 'dashboard' | 'notebook';
+export type AppView = 'dashboard' | 'notebook' | 'history';
 
 export interface Note {
   id: string;
@@ -17,6 +17,17 @@ export interface Note {
   content: string;
   createdAt: number;
   updatedAt: number;
+  drawingData?: string; // Base64 or JSON of the canvas state
+}
+
+export interface HistoryItem {
+  id: string;
+  timestamp: number;
+  title: string;
+  originalText: string;
+  translatedText?: string;
+  refinedText?: string;
+  audioName?: string;
 }
 
 export interface ProcessingState {
@@ -26,6 +37,7 @@ export interface ProcessingState {
 }
 
 export interface TranscriptionResult {
+  title: string;
   originalText: string;
   detectedLanguage?: string;
   translatedText?: string;

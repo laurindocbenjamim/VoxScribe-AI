@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { GEMINI_MODEL_TRANSCRIPTION, GEMINI_MODEL_TRANSLATION, GEMINI_MODEL_TTS } from "../constants";
 
 const getAiClient = () => {
@@ -155,5 +155,44 @@ export const enhanceScientificText = async (text: string, observation?: string):
   } catch (error) {
     console.error("Scientific enhancement error:", error);
     throw new Error("Failed to enhance scientific text.");
+  }
+};
+
+export const generateQAFromTranscript = async (text: string): Promise<{ refinedText: string, qa: { question: string, answer: string }[] }> => {
+  const ai = getAiClient();
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-preview",
+      contents: `Analyze the following transcript. First, identify and correct any grammatical errors, transcription gaps, or misheard words to produce a clean, professional version of the text. Then, based on this corrected text, generate a comprehensive list of insightful questions and answers (5-10 pairs) that cover the key information and takeaways.
+
+Transcript:
+"${text}"`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            refinedText: { type: Type.STRING, description: "The corrected and refined version of the input transcript." },
+            qa: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  question: { type: Type.STRING },
+                  answer: { type: Type.STRING }
+                },
+                required: ["question", "answer"]
+              }
+            }
+          },
+          required: ["refinedText", "qa"]
+        }
+      }
+    });
+    
+    return JSON.parse(response.text || "{}");
+  } catch (error) {
+    console.error("Q&A Generation error:", error);
+    throw new Error("Failed to analyze text and generate Q&A.");
   }
 };

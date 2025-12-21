@@ -5,6 +5,7 @@ export enum AppStatus {
   PROCESSING = 'PROCESSING',
   TRANSCRIBING = 'TRANSCRIBING',
   TRANSLATING = 'TRANSLATING',
+  GENERATING_QA = 'GENERATING_QA',
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR'
 }
@@ -20,6 +21,11 @@ export interface Note {
   drawingData?: string; // Base64 or JSON of the canvas state
 }
 
+export interface QAItem {
+  question: string;
+  answer: string;
+}
+
 export interface HistoryItem {
   id: string;
   timestamp: number;
@@ -27,6 +33,7 @@ export interface HistoryItem {
   originalText: string;
   translatedText?: string;
   refinedText?: string;
+  qa?: QAItem[];
   audioName?: string;
 }
 
@@ -42,6 +49,7 @@ export interface TranscriptionResult {
   detectedLanguage?: string;
   translatedText?: string;
   targetLanguage?: string;
+  qa?: QAItem[];
 }
 
 export interface AudioMetadata {

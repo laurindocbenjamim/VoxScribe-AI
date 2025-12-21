@@ -8,16 +8,17 @@ import {
   generateMindMap, 
   refineTextWithSearch, 
   enhanceScientificText,
-  extractTitle
+  extractTitle,
+  generateQAFromTranscript
 } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
 import { getCurrentUser, login, signup, logout, loginWithProvider } from './services/authService';
-import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note, HistoryItem } from './types';
+import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note, HistoryItem, QAItem } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
 import { 
   MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, 
   CheckIcon, SpeakerIcon, CopyIcon, LockIcon, SparklesIcon, MapIcon, 
-  WandIcon, AcademicIcon, LayoutIcon, BookIcon, HistoryIcon
+  WandIcon, AcademicIcon, LayoutIcon, BookIcon, HistoryIcon, HelpCircleIcon
 } from './components/Icons';
 import AudioVisualizer from './components/AudioVisualizer';
 import PricingModal from './components/PricingModal';
@@ -27,6 +28,7 @@ import RefinementInputModal from './components/RefinementInputModal';
 import AuthModal from './components/AuthModal';
 import Notebook from './components/Notebook';
 import HistoryModal from './components/HistoryModal';
+import QAModal from './components/QAModal';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -57,6 +59,10 @@ const App: React.FC = () => {
   const [isRegeneratingRefinement, setIsRegeneratingRefinement] = useState(false);
   const [refinementType, setRefinementType] = useState<'standard' | 'scientific'>('standard');
   const [showRefinementInput, setShowRefinementInput] = useState(false);
+
+  // Q&A State
+  const [isQAModalOpen, setIsQAModalOpen] = useState(false);
+  const [qaData, setQaData] = useState<{ refinedText: string; qa: QAItem[] } | null>(null);
   
   // History State
   const [history, setHistory] = useState<HistoryItem[]>(() => {
@@ -174,6 +180,7 @@ const App: React.FC = () => {
     setMindMapCode(null);
     setVisualizedText(null);
     setRefinedText(null);
+    setQaData(null);
     stopAudioPlayback();
     if (audioData?.url) {
       URL.revokeObjectURL(audioData.url);
@@ -411,6 +418,27 @@ const App: React.FC = () => {
     }
   };
 
+  const handleGenerateQA = async () => {
+    if (!result?.originalText) return;
+    setStatus(AppStatus.GENERATING_QA);
+    try {
+        const data = await generateQAFromTranscript(result.originalText);
+        setQaData(data);
+        setStatus(AppStatus.COMPLETED);
+        setIsQAModalOpen(true);
+        
+        // Update history
+        if (history.length > 0) {
+          const updatedHistory = [...history];
+          updatedHistory[0] = { ...updatedHistory[0], qa: data.qa, refinedText: data.refinedText };
+          setHistory(updatedHistory);
+        }
+    } catch (err: any) {
+        setError("Failed to generate Q&A.");
+        setStatus(AppStatus.COMPLETED);
+    }
+  };
+
   const handleRegenerateRefinement = async () => {
     const textToRefine = result?.originalText;
     if (!textToRefine) return;
@@ -590,6 +618,7 @@ const App: React.FC = () => {
     setCurrentView('notebook');
     setIsRefinementModalOpen(false);
     setShowHistoryModal(false);
+    setIsQAModalOpen(false);
     showToast("Successfully migrated to Notebook!");
   };
 
@@ -646,6 +675,16 @@ const App: React.FC = () => {
             isRegenerating={isRegeneratingRefinement}
             isPlaying={isPlayingAudio && currentPlayingText === refinedText}
             isGeneratingAudio={isGeneratingAudio && currentPlayingText === refinedText}
+        />
+      )}
+      {isQAModalOpen && qaData && result && (
+        <QAModal
+            qa={qaData.qa}
+            refinedText={qaData.refinedText}
+            title={result.title}
+            onClose={() => setIsQAModalOpen(false)}
+            onCopy={handleCopy}
+            onMigrateToNotebook={handleMigrateToNotebook}
         />
       )}
       {showHistoryModal && (
@@ -765,8 +804,18 @@ const App: React.FC = () => {
                 <section className="lg:col-span-7 space-y-6">
                   <div className="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700 h-full flex flex-col">
                     <div className="flex items-center justify-between mb-4">
-                      <h2 className="text-xl font-semibold text-white truncate max-w-[50%]">{result?.title || 'Transcript'}</h2>
+                      <h2 className="text-xl font-semibold text-white truncate max-w-[40%]">{result?.title || 'Transcript'}</h2>
                       <div className="flex flex-wrap gap-2">
+                        {result?.originalText && (
+                           <button onClick={handleGenerateQA} disabled={status === AppStatus.GENERATING_QA} className="text-xs bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1 disabled:opacity-50">
+                              {status === AppStatus.GENERATING_QA ? (
+                                <div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                              ) : (
+                                <HelpCircleIcon className="w-3 h-3" />
+                              )}
+                              <span>Analyse & Q&A</span>
+                           </button>
+                        )}
                         {result?.originalText && (
                            <button onClick={handleRefineClick} disabled={status === AppStatus.PROCESSING} className="text-xs bg-teal-600/20 hover:bg-teal-600/40 text-teal-400 border border-teal-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1 disabled:opacity-50">
                               {status === AppStatus.PROCESSING && refinementType === 'standard' ? (

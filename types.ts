@@ -26,15 +26,28 @@ export interface QAItem {
   answer: string;
 }
 
-export interface HistoryItem {
+export type HistoryRecordType = 'transcription' | 'translation' | 'refinement' | 'qa' | 'scientific';
+
+export interface HistoryRecord {
   id: string;
-  timestamp: number;
+  type: HistoryRecordType;
   title: string;
-  originalText: string;
-  translatedText?: string;
-  refinedText?: string;
+  timestamp: number;
+  content: string;
   qa?: QAItem[];
-  audioName?: string;
+  metadata?: {
+    language?: string;
+    audioName?: string;
+    observation?: string;
+  };
+}
+
+export interface HistorySession {
+  id: string;
+  mainTitle: string;
+  createdAt: number;
+  audioName: string;
+  records: HistoryRecord[];
 }
 
 export interface ProcessingState {

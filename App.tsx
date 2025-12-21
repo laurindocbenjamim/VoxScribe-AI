@@ -13,7 +13,7 @@ import {
 } from './services/geminiService';
 import { getSubscription, addUsageMinutes, checkLimits, upgradePlan } from './services/subscriptionService';
 import { getCurrentUser, login, signup, logout, loginWithProvider } from './services/authService';
-import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note, HistoryItem, QAItem } from './types';
+import { AppStatus, TranscriptionResult, AudioMetadata, SubscriptionState, PlanTier, User, AppView, Note, HistorySession, HistoryRecord, QAItem } from './types';
 import { TARGET_LANGUAGES, VOICE_OPTIONS } from './constants';
 import { 
   MicIcon, UploadIcon, StopIcon, DownloadIcon, RefreshIcon, PlayIcon, 
@@ -64,12 +64,13 @@ const App: React.FC = () => {
   const [isQAModalOpen, setIsQAModalOpen] = useState(false);
   const [qaData, setQaData] = useState<{ refinedText: string; qa: QAItem[] } | null>(null);
   
-  // History State
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    const saved = localStorage.getItem('voxscribe_history');
+  // History State (Session-based)
+  const [history, setHistory] = useState<HistorySession[]>(() => {
+    const saved = localStorage.getItem('voxscribe_sessions_v2');
     return saved ? JSON.parse(saved) : [];
   });
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   // Notebook State
   const [notes, setNotes] = useState<Note[]>(() => {
@@ -83,7 +84,7 @@ const App: React.FC = () => {
   }, [notes]);
 
   useEffect(() => {
-    localStorage.setItem('voxscribe_history', JSON.stringify(history));
+    localStorage.setItem('voxscribe_sessions_v2', JSON.stringify(history));
   }, [history]);
 
   // Subscription State
@@ -123,6 +124,13 @@ const App: React.FC = () => {
       audioSourceRef.current.playbackRate.value = playbackRate;
     }
   }, [playbackRate, isPlayingAudio]);
+
+  // Helper for formatting recording time
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // Auth Handlers
   const handleLogin = async (email: string, password: string) => {
@@ -169,6 +177,15 @@ const App: React.FC = () => {
     resetApp();
   };
 
+  // Helper to stop audio playback
+  const stopAudioPlayback = () => {
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop();
+      audioSourceRef.current = null;
+    }
+    setIsPlayingAudio(false);
+  };
+
   const resetApp = () => {
     setStatus(AppStatus.IDLE);
     setAudioData(null);
@@ -181,6 +198,7 @@ const App: React.FC = () => {
     setVisualizedText(null);
     setRefinedText(null);
     setQaData(null);
+    setCurrentSessionId(null);
     stopAudioPlayback();
     if (audioData?.url) {
       URL.revokeObjectURL(audioData.url);
@@ -199,29 +217,13 @@ const App: React.FC = () => {
       const audio = new Audio(URL.createObjectURL(blob));
       const timeout = setTimeout(() => {
         const sizeInBytes = blob.size;
-        let estimatedSeconds = 0;
-        if (blob.type.includes('wav')) {
-             estimatedSeconds = sizeInBytes / 32000;
-        } else {
-             estimatedSeconds = sizeInBytes / 16000;
-        }
+        let estimatedSeconds = sizeInBytes / 16000;
         resolve(estimatedSeconds);
       }, 2000); 
 
       audio.onloadedmetadata = () => {
         clearTimeout(timeout);
-        if (audio.duration === Infinity || isNaN(audio.duration)) {
-             const sizeInBytes = blob.size;
-             let estimatedSeconds = 0;
-             if (blob.type.includes('wav')) {
-                 estimatedSeconds = sizeInBytes / 32000;
-             } else {
-                 estimatedSeconds = sizeInBytes / 16000;
-             }
-             resolve(estimatedSeconds);
-        } else {
-            resolve(audio.duration);
-        }
+        resolve(audio.duration || blob.size / 16000);
       };
     });
   };
@@ -278,10 +280,6 @@ const App: React.FC = () => {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024 * 1024) {
-      setError("File size too large. Please upload files under 2GB.");
-      return;
-    }
     resetApp();
     const url = URL.createObjectURL(file);
     const duration = await getAudioDuration(file);
@@ -294,22 +292,43 @@ const App: React.FC = () => {
     });
   };
 
+  const addRecordToCurrentSession = (record: HistoryRecord, mainTitle: string, audioName: string) => {
+    setHistory(prev => {
+      let sessions = [...prev];
+      let sessionId = currentSessionId;
+      
+      let sessionIndex = sessionId ? sessions.findIndex(s => s.id === sessionId) : -1;
+      
+      if (sessionIndex === -1) {
+        const newSession: HistorySession = {
+          id: Date.now().toString(),
+          mainTitle: mainTitle,
+          createdAt: Date.now(),
+          audioName: audioName,
+          records: [record]
+        };
+        setCurrentSessionId(newSession.id);
+        return [newSession, ...sessions];
+      } else {
+        sessions[sessionIndex] = {
+          ...sessions[sessionIndex],
+          records: [record, ...sessions[sessionIndex].records]
+        };
+        return sessions;
+      }
+    });
+  };
+
   const handleProcess = async () => {
     if (!audioData) return;
-    const estimatedDuration = audioData.duration && audioData.duration > 0 ? audioData.duration : 60; 
+    const estimatedDuration = audioData.duration || 60; 
     if (!checkLimits(subscription, estimatedDuration)) {
         setShowPricing(true);
-        setError("Usage limit reached. Please update your plan to continue.");
         return;
     }
     setStatus(AppStatus.TRANSCRIBING);
     setError(null);
-    stopAudioPlayback();
-    setGeneratedAudioBase64(null); 
-    setCurrentPlayingText(null);
-    setMindMapCode(null);
-    setVisualizedText(null);
-    setRefinedText(null);
+    
     try {
       const transcript = await transcribeLargeAudio(audioData.blob);
       const deducedTitle = await extractTitle(transcript);
@@ -317,38 +336,39 @@ const App: React.FC = () => {
       const newSubState = addUsageMinutes(estimatedDuration);
       setSubscription(newSubState);
       
-      const intermediateResult: TranscriptionResult = { title: deducedTitle, originalText: transcript };
-      setResult(intermediateResult);
+      const transcriptionRecord: HistoryRecord = {
+        id: `rec-${Date.now()}`,
+        type: 'transcription',
+        title: deducedTitle,
+        timestamp: Date.now(),
+        content: transcript,
+        metadata: { audioName: audioData.name }
+      };
+
+      addRecordToCurrentSession(transcriptionRecord, deducedTitle, audioData.name);
+      setResult({ title: deducedTitle, originalText: transcript });
       
       setStatus(AppStatus.TRANSLATING);
-      let translated = "";
-      if (transcript) {
-        if (targetLang !== 'en' && !subscription.canTranslate) {
-            translated = "Upgrade to Advanced Plan to unlock translation.";
-        } else {
-            const selectedLangName = TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
-            translated = await translateLongText(transcript, selectedLangName);
-        }
+      if (transcript && subscription.canTranslate && targetLang !== 'en') {
+        const langName = TARGET_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
+        const translated = await translateLongText(transcript, langName);
+        
+        const translationRecord: HistoryRecord = {
+          id: `rec-trans-${Date.now()}`,
+          type: 'translation',
+          title: `${deducedTitle} - Translation (${targetLang.toUpperCase()})`,
+          timestamp: Date.now(),
+          content: translated,
+          metadata: { language: targetLang }
+        };
+        
+        addRecordToCurrentSession(translationRecord, deducedTitle, audioData.name);
+        setResult(prev => prev ? { ...prev, translatedText: translated, targetLanguage: targetLang } : null);
       }
-      
-      const finalResult = { ...intermediateResult, translatedText: translated, targetLanguage: targetLang };
-      setResult(finalResult);
-      
-      // Save to History
-      const historyItem: HistoryItem = {
-        id: Date.now().toString(),
-        timestamp: Date.now(),
-        title: deducedTitle,
-        originalText: transcript,
-        translatedText: translated,
-        audioName: audioData.name
-      };
-      setHistory(prev => [historyItem, ...prev]);
       
       setStatus(AppStatus.COMPLETED);
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "An error occurred during processing.");
+      setError(err.message || "An error occurred.");
       setStatus(AppStatus.ERROR);
     }
   };
@@ -357,63 +377,70 @@ const App: React.FC = () => {
     if (!result) return;
     const timestamp = new Date().toLocaleString();
     const safeTitle = result.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const content = `VOXSCRIBE AI - TRANSCRIPTION REPORT\nTitle: ${result.title}\nDate: ${timestamp}\nFile: ${audioData?.name || 'Recording'}\nDuration: ${audioData?.duration ? formatTime(audioData.duration) : 'Unknown'}\n\n---------------------------------------------------\nORIGINAL TRANSCRIPT\n---------------------------------------------------\n${result.originalText || "(No transcript available)"}\n\n---------------------------------------------------\nTRANSLATION (${targetLang.toUpperCase()})\n---------------------------------------------------\n${result.translatedText || "(No translation available)"}\n\n---------------------------------------------------\nGenerated by VoxScribe AI\n`;
+    const content = `VOXSCRIBE AI - REPORT\nTitle: ${result.title}\nDate: ${timestamp}\n\nORIGINAL:\n${result.originalText}\n\nTRANSLATION:\n${result.translatedText || "N/A"}`;
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `VoxScribe_${safeTitle}_Report.txt`;
+    a.download = `VoxScribe_${safeTitle}.txt`;
     a.click();
-    URL.revokeObjectURL(url);
   };
 
-  const handleUpgrade = (tier: PlanTier) => {
-    const newState = upgradePlan(tier);
-    setSubscription(newState);
-    showToast(`Successfully upgraded to ${tier.charAt(0).toUpperCase() + tier.slice(1)} Plan!`);
-    setShowPricing(false);
-    setShowOnboardingPlans(false);
-  };
-
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    showToast("Copied to clipboard!");
-  };
-
+  // Handler for standard refinement trigger
   const handleRefineClick = () => {
-    if (!result?.originalText) return;
     setRefinementType('standard');
     setShowRefinementInput(true);
   };
 
+  // Handler for scientific refinement trigger
   const handleScientificClick = () => {
-    if (!result?.originalText) return;
     setRefinementType('scientific');
     setShowRefinementInput(true);
   };
 
   const executeRefinement = async (observation: string) => {
     setShowRefinementInput(false);
-    const textToRefine = result?.originalText;
-    if (!textToRefine) return;
+    if (!result?.originalText) return;
     setStatus(AppStatus.PROCESSING);
     try {
         let corrected = (refinementType === 'scientific') 
-            ? await enhanceScientificText(textToRefine, observation)
-            : await refineTextWithSearch(textToRefine, observation);
+            ? await enhanceScientificText(result.originalText, observation)
+            : await refineTextWithSearch(result.originalText, observation);
+        
+        const recordType = refinementType === 'scientific' ? 'scientific' : 'refinement';
+        const suffix = refinementType === 'scientific' ? 'Scientific Refinement' : 'Refined Transcript';
+        
+        const refineRecord: HistoryRecord = {
+          id: `rec-ref-${Date.now()}`,
+          type: recordType,
+          title: `${result.title} - ${suffix}`,
+          timestamp: Date.now(),
+          content: corrected,
+          metadata: { observation }
+        };
+        
+        addRecordToCurrentSession(refineRecord, result.title, audioData?.name || 'Session');
         setRefinedText(corrected);
         setStatus(AppStatus.COMPLETED);
         setIsRefinementModalOpen(true);
-        
-        // Update history item with refinement if possible
-        if (history.length > 0) {
-            const lastItem = history[0];
-            const updatedHistory = [...history];
-            updatedHistory[0] = { ...lastItem, refinedText: corrected };
-            setHistory(updatedHistory);
-        }
     } catch (err: any) {
-        setError("Failed to refine text. Please try again.");
+        setError("Failed to refine.");
+        setStatus(AppStatus.COMPLETED);
+    }
+  };
+
+  // Helper for generating mind map from text
+  const handleGenerateMindMap = async (text: string) => {
+    if (!text) return;
+    setStatus(AppStatus.PROCESSING);
+    try {
+        const code = await generateMindMap(text);
+        setMindMapCode(code);
+        setVisualizedText(text);
+        setIsMindMapModalOpen(true);
+    } catch (err: any) {
+        setError("Failed to generate mind map.");
+    } finally {
         setStatus(AppStatus.COMPLETED);
     }
   };
@@ -423,97 +450,81 @@ const App: React.FC = () => {
     setStatus(AppStatus.GENERATING_QA);
     try {
         const data = await generateQAFromTranscript(result.originalText);
+        
+        const qaRecord: HistoryRecord = {
+          id: `rec-qa-${Date.now()}`,
+          type: 'qa',
+          title: `${result.title} - Analysis & Q&A`,
+          timestamp: Date.now(),
+          content: data.refinedText,
+          qa: data.qa
+        };
+        
+        addRecordToCurrentSession(qaRecord, result.title, audioData?.name || 'Session');
         setQaData(data);
         setStatus(AppStatus.COMPLETED);
         setIsQAModalOpen(true);
-        
-        // Update history
-        if (history.length > 0) {
-          const updatedHistory = [...history];
-          updatedHistory[0] = { ...updatedHistory[0], qa: data.qa, refinedText: data.refinedText };
-          setHistory(updatedHistory);
-        }
     } catch (err: any) {
         setError("Failed to generate Q&A.");
         setStatus(AppStatus.COMPLETED);
     }
   };
 
-  const handleRegenerateRefinement = async () => {
-    const textToRefine = result?.originalText;
-    if (!textToRefine) return;
-    setIsRegeneratingRefinement(true);
-    try {
-        let corrected = (refinementType === 'scientific') 
-            ? await enhanceScientificText(textToRefine)
-            : await refineTextWithSearch(textToRefine);
-        setRefinedText(corrected);
-        if (isPlayingAudio && currentPlayingText === refinedText) stopAudioPlayback();
-    } catch (err: any) {
-        setError("Failed to regenerate refined text.");
-    } finally {
-        setIsRegeneratingRefinement(false);
-    }
+  const handleUpgrade = (tier: PlanTier) => {
+    const newState = upgradePlan(tier);
+    setSubscription(newState);
+    showToast(`Upgraded to ${tier}!`);
+    setShowPricing(false);
   };
 
-  const handleGenerateMindMap = async (text: string) => {
-    if (!text) return;
-    if (isRefinementModalOpen) setIsRefinementModalOpen(false);
-    try {
-        if (text !== visualizedText || !mindMapCode) {
-            setStatus(AppStatus.PROCESSING);
-            const code = await generateMindMap(text);
-            setMindMapCode(code);
-            setVisualizedText(text);
-            setStatus(AppStatus.COMPLETED);
-        }
-        setIsMindMapModalOpen(true);
-    } catch (err: any) {
-        setError("Failed to generate mind map.");
-        setStatus(AppStatus.COMPLETED);
-    }
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    showToast("Copied!");
   };
 
-  const stopAudioPlayback = () => {
-    if (audioSourceRef.current) {
-      audioSourceRef.current.stop();
-      audioSourceRef.current = null;
-    }
-    setIsPlayingAudio(false);
-  };
-
+  // Helper for speech playback
   const handlePlayAudio = async (text: string) => {
     if (isPlayingAudio) {
       stopAudioPlayback();
-      if (text === currentPlayingText) return; 
+      if (text === currentPlayingText) return;
     }
     if (!text) return;
+
     setIsGeneratingAudio(true);
     setCurrentPlayingText(text);
+
     try {
       let base64Audio = generatedAudioBase64;
       if (text !== currentPlayingText || !base64Audio) {
           base64Audio = await generateSpeech(text, selectedVoice);
-          setGeneratedAudioBase64(base64Audio); 
+          setGeneratedAudioBase64(base64Audio);
       }
       if (!base64Audio) return;
+      
       const binaryString = atob(base64Audio);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       } else if (audioContextRef.current.state === 'suspended') {
          await audioContextRef.current.resume();
       }
+
       const dataInt16 = new Int16Array(bytes.buffer);
       const frameCount = dataInt16.length;
       const audioBuffer = audioContextRef.current.createBuffer(1, frameCount, 24000);
       const channelData = audioBuffer.getChannelData(0);
-      for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i] / 32768.0;
+      for (let i = 0; i < frameCount; i++) {
+        channelData[i] = dataInt16[i] / 32768.0;
+      }
+
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
-      source.playbackRate.value = playbackRate; 
+      source.playbackRate.value = playbackRate;
       source.connect(audioContextRef.current.destination);
       source.onended = () => setIsPlayingAudio(false);
       audioSourceRef.current = source;
@@ -527,10 +538,16 @@ const App: React.FC = () => {
     }
   };
 
+  // Helper for audio export as WAV
   const handleDownloadAudio = async (text: string) => {
     let base64ToDownload = generatedAudioBase64;
     if (text !== currentPlayingText || !base64ToDownload) {
-        try { base64ToDownload = await generateSpeech(text, selectedVoice); } catch (e) { return; }
+        try {
+            base64ToDownload = await generateSpeech(text, selectedVoice);
+        } catch (e) {
+            setError("Failed to generate audio.");
+            return;
+        }
     }
     if (!base64ToDownload) return;
     const binaryString = atob(base64ToDownload);
@@ -540,11 +557,12 @@ const App: React.FC = () => {
     const dataInt16 = new Int16Array(bytes.buffer);
     const float32Samples = new Float32Array(dataInt16.length);
     for(let i=0; i<dataInt16.length; i++) float32Samples[i] = dataInt16[i] / 32768.0;
+
     const buffer = new ArrayBuffer(44 + float32Samples.length * 2);
     const view = new DataView(buffer);
     const sampleRate = 24000;
-    const writeString = (view: DataView, offset: number, string: string) => {
-        for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+    const writeString = (v: DataView, o: number, s: string) => {
+      for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
     };
     writeString(view, 0, 'RIFF');
     view.setUint32(4, 36 + float32Samples.length * 2, true);
@@ -567,42 +585,11 @@ const App: React.FC = () => {
     }
     const wavBlob = new Blob([view], { type: 'audio/wav' });
     const url = URL.createObjectURL(wavBlob);
-    const safeTitle = result?.title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'speech';
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${safeTitle}_Speech.wav`;
+    a.download = `speech-output.wav`;
     a.click();
     URL.revokeObjectURL(url);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Notebook Handlers
-  const handleSaveNote = (updatedNote: Note) => {
-    setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
-  };
-
-  const handleDeleteNote = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this note?")) {
-      setNotes(prev => prev.filter(n => n.id !== id));
-      if (activeNoteId === id) setActiveNoteId(null);
-    }
-  };
-
-  const handleCreateNote = () => {
-    const newNote: Note = {
-      id: Date.now().toString(),
-      title: 'Untitled Note',
-      content: '',
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-    setNotes(prev => [newNote, ...prev]);
-    setActiveNoteId(newNote.id);
   };
 
   const handleMigrateToNotebook = (content: string, title: string) => {
@@ -619,64 +606,75 @@ const App: React.FC = () => {
     setIsRefinementModalOpen(false);
     setShowHistoryModal(false);
     setIsQAModalOpen(false);
-    showToast("Successfully migrated to Notebook!");
+    showToast("Added to Notebook!");
   };
 
+  // Notebook persistent storage handlers
+  const handleSaveNote = (updatedNote: Note) => {
+    setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
+  };
+
+  const handleDeleteNote = (id: string) => {
+    setNotes(prev => prev.filter(n => n.id !== id));
+    if (activeNoteId === id) setActiveNoteId(null);
+  };
+
+  const handleCreateNote = () => {
+    const newNote: Note = {
+      id: Date.now().toString(),
+      title: 'New Note',
+      content: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    setNotes(prev => [newNote, ...prev]);
+    setActiveNoteId(newNote.id);
+  };
+
+  // Subscription usage bar sub-component
   const UsageBar = () => {
     const percent = Math.min((subscription.minutesUsed / subscription.maxMinutes) * 100, 100);
-    const isLow = percent > 80;
     return (
-        <div className="bg-slate-800 rounded-lg p-3 border border-slate-700 w-full md:w-64">
-            <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-400">Monthly Usage</span>
-                <span className={`${isLow ? 'text-amber-400' : 'text-slate-200'}`}>
-                    {Math.floor(subscription.minutesUsed)} / {subscription.maxMinutes} mins
-                </span>
-            </div>
-            <div className="w-full bg-slate-700 rounded-full h-2">
-                <div className={`h-2 rounded-full transition-all duration-500 ${isLow ? 'bg-amber-500' : 'bg-blue-500'}`} style={{ width: `${percent}%` }}></div>
-            </div>
-            {subscription.tier === 'free' && !isDevUser && (
-                <button onClick={() => setShowPricing(true)} className="text-xs text-blue-400 hover:text-blue-300 mt-2 w-full text-center">Upgrade to remove limits</button>
-            )}
+      <div className="bg-slate-800 rounded-lg p-3 border border-slate-700 w-full md:w-64">
+        <div className="flex justify-between text-xs mb-1">
+          <span className="text-slate-400">Monthly Usage</span>
+          <span className="text-slate-200">
+            {Math.floor(subscription.minutesUsed)} / {subscription.maxMinutes} mins
+          </span>
         </div>
+        <div className="w-full bg-slate-700 rounded-full h-2">
+          <div className="h-2 rounded-full bg-blue-500 transition-all" style={{ width: `${percent}%` }}></div>
+        </div>
+      </div>
     );
   };
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8">
-      {showAuth && !user && (
-         <AuthModal onLogin={handleLogin} onSignup={handleSignup} onSocialLogin={handleSocialLogin} />
-      )}
-      {showOnboardingPlans && !isDevUser && (
-         <PricingModal currentTier={'free'} onUpgrade={handleUpgrade} onClose={() => {}} isOnboarding={true} />
-      )}
-      {showPricing && !showOnboardingPlans && !isDevUser && (
-          <PricingModal currentTier={subscription.tier} onUpgrade={handleUpgrade} onClose={() => setShowPricing(false)} />
-      )}
-      {showRefinementInput && (
-        <RefinementInputModal title={refinementType === 'scientific' ? "Scientific Enhancement Context" : "Refinement Context"} onClose={() => setShowRefinementInput(false)} onConfirm={executeRefinement} />
-      )}
-      {isMindMapModalOpen && mindMapCode && (
-        <MindMapModal mermaidCode={mindMapCode} onClose={() => setIsMindMapModalOpen(false)} />
-      )}
+      {showAuth && !user && <AuthModal onLogin={handleLogin} onSignup={handleSignup} onSocialLogin={handleSocialLogin} />}
+      {showOnboardingPlans && !isDevUser && <PricingModal currentTier={'free'} onUpgrade={handleUpgrade} onClose={() => {}} isOnboarding={true} />}
+      {showPricing && !showOnboardingPlans && !isDevUser && <PricingModal currentTier={subscription.tier} onUpgrade={handleUpgrade} onClose={() => setShowPricing(false)} />}
+      {showRefinementInput && <RefinementInputModal title={refinementType === 'scientific' ? "Scientific Enhancement" : "Refinement"} onClose={() => setShowRefinementInput(false)} onConfirm={executeRefinement} />}
+      {isMindMapModalOpen && mindMapCode && <MindMapModal mermaidCode={mindMapCode} onClose={() => setIsMindMapModalOpen(false)} />}
+      
       {isRefinementModalOpen && refinedText && result?.originalText && (
         <RefinementModal
             originalText={result.originalText}
             refinedText={refinedText}
-            title={refinementType === 'scientific' ? "Scientific Enhancement (IEEE)" : "Refined Transcript"}
+            title={refinementType === 'scientific' ? "Scientific Enhancement" : "Refined Transcript"}
             onClose={() => setIsRefinementModalOpen(false)}
             onPlay={handlePlayAudio}
             onDownloadAudio={handleDownloadAudio}
             onCopy={handleCopy}
             onVisualize={handleGenerateMindMap}
-            onRegenerate={handleRegenerateRefinement}
+            onRegenerate={() => {}} 
             onMigrateToNotebook={handleMigrateToNotebook}
-            isRegenerating={isRegeneratingRefinement}
+            isRegenerating={false}
             isPlaying={isPlayingAudio && currentPlayingText === refinedText}
             isGeneratingAudio={isGeneratingAudio && currentPlayingText === refinedText}
         />
       )}
+      
       {isQAModalOpen && qaData && result && (
         <QAModal
             qa={qaData.qa}
@@ -687,6 +685,7 @@ const App: React.FC = () => {
             onMigrateToNotebook={handleMigrateToNotebook}
         />
       )}
+      
       {showHistoryModal && (
         <HistoryModal 
           history={history} 
@@ -698,51 +697,20 @@ const App: React.FC = () => {
       )}
 
       <div className="max-w-6xl mx-auto space-y-8">
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6 space-y-4 md:space-y-0">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6">
           <div>
             <div className="flex items-center space-x-3">
                 <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">VoxScribe AI</h1>
-                {subscription.tier === 'advanced' && (
-                    <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs border border-purple-500/50 flex items-center">
-                        <SparklesIcon className="w-3 h-3 mr-1" /> PRO
-                    </span>
-                )}
+                {subscription.tier === 'advanced' && <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs border border-purple-500/50 flex items-center"><SparklesIcon className="w-3 h-3 mr-1" /> PRO</span>}
             </div>
             <div className="flex items-center mt-4 space-x-8">
-               <button 
-                  onClick={() => setCurrentView('dashboard')}
-                  className={`text-sm font-medium transition-colors flex items-center space-x-2 ${currentView === 'dashboard' ? 'text-blue-400 border-b-2 border-blue-400 pb-2' : 'text-slate-500 hover:text-slate-300 pb-2'}`}
-               >
-                  <LayoutIcon className="w-4 h-4" />
-                  <span>Dashboard</span>
-               </button>
-               <button 
-                  onClick={() => setCurrentView('notebook')}
-                  className={`text-sm font-medium transition-colors flex items-center space-x-2 ${currentView === 'notebook' ? 'text-blue-400 border-b-2 border-blue-400 pb-2' : 'text-slate-500 hover:text-slate-300 pb-2'}`}
-               >
-                  <BookIcon className="w-4 h-4" />
-                  <span>Notebook</span>
-               </button>
-               <button 
-                  onClick={() => setShowHistoryModal(true)}
-                  className={`text-sm font-medium transition-colors flex items-center space-x-2 text-slate-500 hover:text-slate-300 pb-2`}
-               >
-                  <HistoryIcon className="w-4 h-4" />
-                  <span>History</span>
-               </button>
+               <button onClick={() => setCurrentView('dashboard')} className={`text-sm font-medium flex items-center space-x-2 ${currentView === 'dashboard' ? 'text-blue-400 border-b-2 border-blue-400 pb-2' : 'text-slate-500 hover:text-slate-300 pb-2'}`}><LayoutIcon className="w-4 h-4" /><span>Dashboard</span></button>
+               <button onClick={() => setCurrentView('notebook')} className={`text-sm font-medium flex items-center space-x-2 ${currentView === 'notebook' ? 'text-blue-400 border-b-2 border-blue-400 pb-2' : 'text-slate-500 hover:text-slate-300 pb-2'}`}><BookIcon className="w-4 h-4" /><span>Notebook</span></button>
+               <button onClick={() => setShowHistoryModal(true)} className="text-sm font-medium flex items-center space-x-2 text-slate-500 hover:text-slate-300 pb-2"><HistoryIcon className="w-4 h-4" /><span>History</span></button>
             </div>
           </div>
           
           <div className="flex flex-col items-end space-y-3">
-             <div className="flex items-center space-x-4">
-                {user && (
-                    <div className="flex items-center space-x-2">
-                        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold">{user.name.charAt(0).toUpperCase()}</div>
-                        <span className="text-sm text-slate-300 hidden sm:block">{user.email}</span>
-                        <button onClick={handleLogout} className="text-xs text-slate-500 hover:text-red-400 ml-2">Logout</button>
-                    </div>
-                )}
-             </div>
             <UsageBar />
           </div>
         </header>
@@ -756,15 +724,11 @@ const App: React.FC = () => {
                     <div className="mb-6">
                       {!audioData && !isRecording ? (
                         <div className="space-y-4">
-                          <button onClick={startRecording} disabled={subscription.minutesUsed >= subscription.maxMinutes} className={`w-full h-16 flex items-center justify-center space-x-3 rounded-xl border transition-all group ${subscription.minutesUsed >= subscription.maxMinutes ? 'bg-slate-700 border-slate-600 text-slate-500' : 'bg-red-500/10 border-red-500/50 hover:bg-red-500/20 text-red-400'}`}>
-                            {subscription.minutesUsed >= subscription.maxMinutes ? <span><LockIcon className="w-5 h-5 mr-2"/> Limit Reached</span> : <><MicIcon className="w-6 h-6 group-hover:scale-110 transition-transform" /><span className="font-medium">Start Recording</span></>}
-                          </button>
+                          <button onClick={startRecording} className="w-full h-16 flex items-center justify-center space-x-3 rounded-xl border bg-red-500/10 border-red-500/50 hover:bg-red-500/20 text-red-400"><MicIcon className="w-6 h-6" /><span className="font-medium">Start Recording</span></button>
                           <div className="flex items-center justify-center text-slate-500 text-sm"><span className="px-2 bg-slate-800">OR</span></div>
                           <div className="relative">
-                            <input type="file" accept="audio/*" onChange={handleFileUpload} disabled={subscription.minutesUsed >= subscription.maxMinutes} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                            <div className={`w-full h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all ${subscription.minutesUsed >= subscription.maxMinutes ? 'border-slate-700 bg-slate-800 text-slate-600' : 'border-slate-600 hover:border-blue-500 hover:bg-slate-700/50 text-slate-400'}`}>
-                              {subscription.minutesUsed >= subscription.maxMinutes ? <LockIcon className="w-6 h-6 mb-2" /> : <><UploadIcon className="w-6 h-6 mb-2" /><span>Upload Audio File</span></>}
-                            </div>
+                            <input type="file" accept="audio/*" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                            <div className="w-full h-24 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-600 hover:border-blue-500 hover:bg-slate-700/50 text-slate-400"><UploadIcon className="w-6 h-6 mb-2" /><span>Upload Audio File</span></div>
                           </div>
                         </div>
                       ) : (
@@ -773,7 +737,7 @@ const App: React.FC = () => {
                             <div className="flex flex-col items-center space-y-4 py-4">
                               <div className="text-4xl font-mono text-red-400 animate-pulse">{formatTime(recordingDuration)}</div>
                               <AudioVisualizer isRecording={isRecording} stream={streamRef.current} />
-                              <button onClick={stopRecording} className="bg-red-500 hover:bg-red-600 text-white px-8 py-3 rounded-full font-bold shadow-lg shadow-red-500/25 flex items-center space-x-2"><StopIcon /><span>Stop</span></button>
+                              <button onClick={stopRecording} className="bg-red-500 hover:bg-red-600 text-white px-8 py-3 rounded-full font-bold flex items-center space-x-2"><StopIcon /><span>Stop</span></button>
                             </div>
                           ) : (
                             <div className="bg-slate-900/50 rounded-xl p-4 border border-slate-700">
@@ -808,35 +772,22 @@ const App: React.FC = () => {
                       <div className="flex flex-wrap gap-2">
                         {result?.originalText && (
                            <button onClick={handleGenerateQA} disabled={status === AppStatus.GENERATING_QA} className="text-xs bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1 disabled:opacity-50">
-                              {status === AppStatus.GENERATING_QA ? (
-                                <div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin"></div>
-                              ) : (
-                                <HelpCircleIcon className="w-3 h-3" />
-                              )}
+                              {status === AppStatus.GENERATING_QA ? <div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin"></div> : <HelpCircleIcon className="w-3 h-3" />}
                               <span>Analyse & Q&A</span>
                            </button>
                         )}
                         {result?.originalText && (
-                           <button onClick={handleRefineClick} disabled={status === AppStatus.PROCESSING} className="text-xs bg-teal-600/20 hover:bg-teal-600/40 text-teal-400 border border-teal-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1 disabled:opacity-50">
-                              {status === AppStatus.PROCESSING && refinementType === 'standard' ? (
-                                <div className="w-3 h-3 border border-teal-400 border-t-transparent rounded-full animate-spin"></div>
-                              ) : (
-                                <WandIcon className="w-3 h-3" />
-                              )}
+                           <button onClick={handleRefineClick} className="text-xs bg-teal-600/20 hover:bg-teal-600/40 text-teal-400 border border-teal-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1">
+                              <WandIcon className="w-3 h-3" />
                               <span>Fix Gaps</span>
                            </button>
                         )}
                         {result?.originalText && (
-                           <button onClick={handleScientificClick} disabled={status === AppStatus.PROCESSING} className="text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1 disabled:opacity-50">
-                              {status === AppStatus.PROCESSING && refinementType === 'scientific' ? (
-                                <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                              ) : (
-                                <AcademicIcon className="w-3 h-3" />
-                              )}
+                           <button onClick={handleScientificClick} className="text-xs bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-600/30 px-3 py-1.5 rounded-md flex items-center space-x-1">
+                              <AcademicIcon className="w-3 h-3" />
                               <span>Refine Content</span>
                            </button>
                         )}
-                        {result?.originalText && <button onClick={() => handleGenerateMindMap(result.originalText)} className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md flex items-center space-x-1"><MapIcon className="w-3 h-3" /><span>Visualize</span></button>}
                         {result?.originalText && <button onClick={handleExportReport} className="text-xs bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-md flex items-center space-x-1"><DownloadIcon className="w-3 h-3" /><span>Export</span></button>}
                       </div>
                     </div>
@@ -851,14 +802,7 @@ const App: React.FC = () => {
                 </section>
              </div>
           ) : (
-            <Notebook 
-              notes={notes}
-              activeNoteId={activeNoteId}
-              onSaveNote={handleSaveNote}
-              onDeleteNote={handleDeleteNote}
-              onSelectNote={setActiveNoteId}
-              onCreateNote={handleCreateNote}
-            />
+            <Notebook notes={notes} activeNoteId={activeNoteId} onSaveNote={handleSaveNote} onDeleteNote={handleDeleteNote} onSelectNote={setActiveNoteId} onCreateNote={handleCreateNote} />
           )}
         </main>
       </div>
